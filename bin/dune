@@ -1,4 +1,4 @@
 (executable
- (name emit_bundle)
+ (name project)
  (libraries core hardcaml_asic fifo_asic yojson)
  (preprocess (pps ppx_jane)))

@@ -3,17 +3,8 @@ open Hardcaml_asic
 
 let emit ~source_root ~output_dir =
   let open Or_error.Let_syntax in
-  let%bind project = Fifo_asic.Declaration.create () in
-  let%bind resolved = Project.elaborate_for_flow project in
-  let%bind simulation_project = Project.elaborate project ~mode:Simulation in
-  let%bind bundle =
-    Bundle.render
-      ~simulation_project
-      ~source_root
-      ~input_paths:Fifo_asic.Declaration.source_inputs
-      resolved
-  in
-  let%map () = Bundle.write bundle ~output_dir in
+  let%bind project = Fifo_asic.project () in
+  let%map bundle = Hardcaml_asic.Project.emit_bundle project ~source_root ~output_dir in
   printf
     "%s\n%!"
     (Yojson.Safe.to_string
@@ -23,11 +14,11 @@ let emit ~source_root ~output_dir =
          ]))
 ;;
 
-let () =
+let emit_args argv =
   let source_root = ref None in
   let output_dir = ref None in
-  let usage = "emit_bundle --source-root SOURCE_ROOT --output-dir OUTPUT_DIR" in
-  Stdlib.Arg.parse
+  let usage = "project emit --source-root SOURCE_ROOT --output-dir OUTPUT_DIR" in
+  Stdlib.Arg.parse_argv ~current:(ref 0) argv
     [ "--source-root", Stdlib.Arg.String (fun s -> source_root := Some s), "PATH Consumer source checkout"
     ; "--output-dir", Stdlib.Arg.String (fun s -> output_dir := Some s), "PATH New or empty bundle directory"
     ]
@@ -45,4 +36,27 @@ let () =
   | _ ->
     eprintf "%s\n%!" usage;
     Stdlib.exit 2
+;;
+
+let usage = "Usage: project describe | project emit --source-root ROOT --output-dir DIR"
+
+let () =
+  try
+    match Sys.get_argv () |> Array.to_list with
+    | [ _; ("--help" | "-help") ] -> printf "%s\n%!" usage
+    | [ _; "describe" ] ->
+      (match Fifo_asic.project () with
+       | Ok project -> printf "%s\n%!" (Sexp.to_string_hum (Hardcaml_asic.Project.describe project))
+       | Error error ->
+         eprintf "%s\n%!" (Error.to_string_hum error);
+         Stdlib.exit 1)
+    | _ :: "emit" :: args -> emit_args (Array.of_list ("project emit" :: args))
+    | _ ->
+      eprintf "%s\n%!" usage;
+      Stdlib.exit 2
+  with
+  | Stdlib.Arg.Bad message ->
+    eprintf "%s\n%!" message;
+    Stdlib.exit 2
+  | Stdlib.Arg.Help message -> printf "%s%!" message
 ;;

@@ -10,6 +10,13 @@ from unittest.mock import patch
 
 import asic_dependency as dep
 
+PROJECT_API = """type t
+val create : name:string -> ?source_inputs:string list -> policy:Resource_policy.t -> unit -> t Or_error.t
+val source_inputs : t -> string list
+val describe : t -> Sexp.t
+val emit_bundle : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> t -> source_root:string -> output_dir:string -> Bundle.t Or_error.t
+"""
+
 
 class SetupTests(unittest.TestCase):
     def setUp(self):
@@ -25,6 +32,7 @@ class SetupTests(unittest.TestCase):
             "lib/elaborated_project.mli": "type t\n",
             "lib/resolved_flow.mli": "type t = private { elaborated_project : Elaborated_project.t }\n",
             "lib/bundle.mli": "val render : ?simulation_project:Elaborated_project.t -> unit\n",
+            "lib/project.mli": PROJECT_API,
             "flow/dune": "hardcaml-asic-flow\n",
             "toolchain.lock": "fixture data\n",
             ".gitignore": "_build/\n.toolchain/\nignored\n",
@@ -63,6 +71,7 @@ class SetupTests(unittest.TestCase):
             raise dep.Error("injected " + stage + " failure")
         if stage == "build" and "probe.exe" in argv:
             self.assertIn("hardcaml_asic", (Path(cwd) / "dune").read_text())
+            self.assertEqual((Path(cwd) / "probe.ml").read_text(), dep.PROBE)
             if self.failure == "dune-probe":
                 raise dep.Error("injected Dune link failure")
         elif stage == "build":
@@ -83,10 +92,12 @@ class SetupTests(unittest.TestCase):
                 target = package / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text("stub installed bytes")
-            for name in ("elaborated_project.mli", "resolved_flow.mli", "bundle.mli"):
+            for name in ("elaborated_project.mli", "resolved_flow.mli", "bundle.mli", "project.mli"):
                 (package / name).write_bytes((self.snapshot / "lib" / name).read_bytes())
             if self.failure == "old-api":
                 (package / "resolved_flow.mli").write_text("old API")
+            if self.failure == "old-project-api":
+                (package / "project.mli").write_text("type t")
             if self.failure == "capture-metadata":
                 (package / "dune-package").write_text(str(self.snapshot / "_build/install/default/lib"))
             if self.failure == "external-link":
@@ -102,6 +113,10 @@ class SetupTests(unittest.TestCase):
         elif stage == "ocamlc":
             self.assertIn("Resolved_flow.t", Path(argv[-1]).read_text())
             self.assertIn("?simulation_project:None", Path(argv[-1]).read_text())
+            self.assertEqual(Path(argv[-1]).read_text(), dep.PROBE)
+            for token in ("Project.create ?source_inputs:", "Project.source_inputs", "Project.describe",
+                          "?inputs:Target.Inputs.t", "?include_simulation:bool", "Project.emit_bundle"):
+                self.assertIn(token, dep.PROBE)
         return b""
 
     def refresh(self, mode="recorded"):
@@ -131,7 +146,7 @@ class SetupTests(unittest.TestCase):
 
     def test_failures_preserve_publication(self):
         first = self.refresh()
-        for stage in ("build", "install", "query", "ocamlc", "dune-probe", "capture-metadata", "cli", "missing-data", "wrong-package", "old-api", "external-link"):
+        for stage in ("build", "install", "query", "ocamlc", "dune-probe", "capture-metadata", "cli", "missing-data", "wrong-package", "old-api", "old-project-api", "external-link"):
             with self.subTest(stage=stage):
                 self.failure = stage
                 with self.assertRaises(dep.Error):
@@ -170,6 +185,37 @@ class SetupTests(unittest.TestCase):
         with self.assertRaisesRegex(dep.Error, "renamed public API"):
             self.refresh("recorded")
         self.assertEqual((self.store / "current").resolve(), Path(first["generation"]))
+
+    def test_old_recorded_api_allows_new_development_and_refusal_preserves_selection(self):
+        (self.source / "lib/project.mli").write_text("type t\n")
+        self.fixture_git("add", "lib/project.mli")
+        self.fixture_git("commit", "-m", "old project API fixture")
+        self.record["revision"] = self.fixture_git("rev-parse", "HEAD").decode().strip()
+        (self.source / "lib/project.mli").write_text(PROJECT_API)
+        first = self.refresh("development")
+        self.assertTrue(first["differs_from_recorded_snapshot"])
+        calls = len(self.calls)
+        with self.assertRaisesRegex(dep.Error, "explicit development refresh"):
+            self.refresh("recorded")
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual((self.store / "current").resolve(), Path(first["generation"]))
+        self.assertEqual(json.loads((self.store / "current/receipt.json").read_text()), first)
+
+    def test_project_api_requires_all_new_signatures(self):
+        dep.project_api_check(PROJECT_API.encode())
+        for token in ("?source_inputs:string list", "val source_inputs", "val describe", "val emit_bundle",
+                      "?inputs:Target.Inputs.t", "?include_simulation:bool", "output_dir:string"):
+            with self.subTest(token=token), self.assertRaises(dep.Error):
+                dep.project_api_check(PROJECT_API.replace(token, "obsolete").encode())
+
+    def test_validate_source_reports_uncompiled_and_does_not_publish(self):
+        result = dep.run(["python3", str(Path(dep.__file__)), "validate-source",
+                          "--source", str(self.source), "--revision", self.record["revision"]])
+        report = json.loads(result)
+        self.assertIs(report["compiled"], False)
+        self.assertIs(report["project_api_present"], True)
+        self.assertFalse(self.store.exists())
+        self.assertEqual(self.calls, [])
 
     def test_lock_contention(self):
         first = self.refresh()

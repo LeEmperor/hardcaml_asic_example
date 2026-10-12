@@ -23,7 +23,13 @@ EXCLUDED = {".git", "_build", ".toolchain", ".dev", "__pycache__"}
 PROBE = """open Hardcaml_asic
 let project (r : Resolved_flow.t) : Elaborated_project.t = r.elaborated_project
 let render = Bundle.render ?simulation_project:None
-let () = ignore project; ignore render
+let create = Project.create ?source_inputs:(Some ([] : string list))
+let source_inputs : Project.t -> string list = Project.source_inputs
+let describe : Project.t -> Core.Sexp.t = Project.describe
+let emit_bundle : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> Project.t
+  -> source_root:string -> output_dir:string -> Bundle.t Core.Or_error.t = Project.emit_bundle
+let () = ignore project; ignore render; ignore create; ignore source_inputs;
+  ignore describe; ignore emit_bundle
 """
 
 
@@ -128,6 +134,20 @@ def development(source, store):
     return entries
 
 
+def project_api_check(data):
+    text = re.sub(r"\s+", "", re.sub(r"\(\*.*?\*\)", "", data.decode(), flags=re.S))
+    signatures = {
+        "create": r"valcreate:(?:(?!val).)*?\?source_inputs:stringlist(?:(?!val).)*?->unit->tOr_error\.t",
+        "source_inputs": r"valsource_inputs:t->stringlist",
+        "describe": r"valdescribe:t->Sexp\.t",
+        "emit_bundle": r"valemit_bundle:\?inputs:Target\.Inputs\.t->\?include_simulation:bool->t->source_root:string->output_dir:string->Bundle\.tOr_error\.t",
+    }
+    for name, signature in signatures.items():
+        if not re.search(signature, text):
+            raise Error(f"incompatible Project.{name} API; use explicit development refresh "
+                        "(--mode development) and re-activate current/activate.sh until the owner updates the pin")
+
+
 def api_check(entries):
     required = {"dune-project": b"hardcaml_asic", "lib/elaborated_project.mli": b"type t",
                 "lib/resolved_flow.mli": b"elaborated_project : Elaborated_project.t",
@@ -136,6 +156,7 @@ def api_check(entries):
     for name, token in required.items():
         if name not in entries or token not in entries[name][1]:
             raise Error(f"expected hardcaml_asic source with renamed public API: missing/incompatible {name}")
+    project_api_check(entries.get("lib/project.mli", (None, b""))[1])
 
 
 def materialize(entries, destination):
@@ -246,7 +267,7 @@ export {variable}
 
 def validate_install(generation, work, runner):
     package = generation / "lib/hardcaml_asic"
-    for relative in ("META", "dune-package", "elaborated_project.mli", "resolved_flow.mli", "bundle.mli",
+    for relative in ("META", "dune-package", "elaborated_project.mli", "resolved_flow.mli", "bundle.mli", "project.mli",
                      "flow/hardcaml_asic_flow/cli.py", "flow/hardcaml_asic_flow/data/toolchain.lock",
                      "flow/hardcaml_asic_flow/data/toolchain.sh", "flow/hardcaml_asic_flow/data/version.txt"):
         if not (package / relative).is_file():
@@ -256,6 +277,7 @@ def validate_install(generation, work, runner):
                         ("bundle.mli", "?simulation_project:")):
         if token not in (package / name).read_text():
             raise Error(f"installed public API incompatible: {name}")
+    project_api_check((package / "project.mli").read_bytes())
     for path in generation.rglob("*"):
         if path.is_symlink() and not path.resolve(strict=True).is_relative_to(generation):
             raise Error(f"installed symlink escapes immutable generation: {path}")
@@ -285,7 +307,6 @@ def refresh(source, mode, store, record, runner=run, remove_source_build_overrid
         raise Error("source cannot be inside the store")
     with writer(store):
         baseline = committed(source, record["revision"])
-        api_check(baseline)
         base = git(source, "rev-parse", "HEAD").decode().strip()
         observed_base = committed(source, base) if mode == "development" else baseline
         if mode == "development":
@@ -390,7 +411,7 @@ def main():
                 raise Error("expected full 40-character commit revision")
             entries = committed(source_check(args.source), args.revision)
             api_check(entries)
-            print(json.dumps({"revision": args.revision, "renamed_api_present": True,
+            print(json.dumps({"revision": args.revision, "renamed_api_present": True, "project_api_present": True,
                               "snapshot_sha256": checksum(entries), "compiled": False}))
             return
         record = record_read(args.record)

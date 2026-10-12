@@ -133,7 +133,7 @@ def real_checkout(emitter, exporter, source, bench, work, require_rtl):
     manifests = []
     for name in ("first", "second"):
         output = work / name
-        response = json.loads(run([emitter, "--source-root", source, "--output-dir", output], env).stdout)
+        response = json.loads(run([emitter, "emit", "--source-root", source, "--output-dir", output], env).stdout)
         m = inspect(output, response, source, inputs)
         require(m["source_revision"] == revision, "actual checkout revision")
         require({x["path"]: x["git_status"] for x in m["source_inputs"]} == statuses,
@@ -162,8 +162,16 @@ def main():
     parser.add_argument("--work-dir", type=Path,
                         help="Fresh preserved output directory required with --real-checkout")
     parser.add_argument("--baseline-emitter", type=Path,
-                        help="Saved pre-migration executable to compare on the identical source fixture")
+                        help="Saved old CLI executable (without emit subcommand)")
+    parser.add_argument("--baseline-source-root", type=Path,
+                        help="Saved source snapshot supplying only old-only inventory paths")
+    parser.add_argument("--baseline-inputs", type=Path,
+                        help="Saved baseline --inputs output, one relative path per line")
     args = parser.parse_args()
+    if bool(args.baseline_source_root) != bool(args.baseline_inputs):
+        parser.error("--baseline-source-root and --baseline-inputs must be supplied together")
+    if args.baseline_inputs and not args.baseline_emitter:
+        parser.error("baseline source/inventory requires --baseline-emitter")
     emitter, exporter, source_root, bench = [p.resolve() for p in (args.emitter, args.exporter, args.source_root, args.bench)]
     baseline_emitter = args.baseline_emitter.resolve() if args.baseline_emitter else None
     if args.real_checkout:
@@ -188,13 +196,17 @@ def main():
         (tmp / "template").mkdir()
         inputs = run([exporter, "--inputs"], env).stdout.splitlines()
         require(inputs and len(inputs) == len(set(inputs)), "unique declared inputs")
+        baseline_inputs = args.baseline_inputs.read_text().splitlines() if args.baseline_inputs else inputs
+        require(baseline_inputs and len(baseline_inputs) == len(set(baseline_inputs)), "unique baseline inputs")
+        union_inputs = sorted(set(inputs) | set(baseline_inputs))
         source = tmp / "source"
         source.mkdir()
-        for p in inputs:
+        for p in union_inputs:
             require(not Path(p).is_absolute() and not {"..", ".git", "_build"}.intersection(Path(p).parts), "safe input")
             dest = source / p
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source_root / p, dest)
+            origin = source_root if p in inputs else args.baseline_source_root
+            shutil.copyfile(origin / p, dest)
 
         def git(*argv):
             return run(["git", "-C", source, "-c", "user.name=Bundle test", "-c", "user.email=bundle@test.invalid",
@@ -202,7 +214,8 @@ def main():
 
         def emit(name, ok=True, executable=emitter):
             output = tmp / name
-            result = run([executable, "--source-root", source, "--output-dir", output], env, ok=ok)
+            command = [executable] + (["emit"] if executable == emitter else [])
+            result = run([*command, "--source-root", source, "--output-dir", output], env, ok=ok)
             return output, json.loads(result.stdout) if ok else result
 
         git("init", "--template=" + str(tmp / "template"))
@@ -215,7 +228,7 @@ def main():
         _, failure = emit("unborn-existing", ok=False)
         require("git failed" in failure.stderr and tree(protected) == protected_bytes,
                 "unborn failure preserves existing bytes")
-        git("add", "--", *inputs)
+        git("add", "--", *union_inputs)
         git("commit", "-m", "baseline")
         proof = git("show", "-s", "--format=%an <%ae>%n%cn <%ce>%n%s", "HEAD")
         require(proof == "Bundle test <bundle@test.invalid>\nBundle test <bundle@test.invalid>\nbaseline", "synthetic identities")
@@ -231,17 +244,23 @@ def main():
         saved = tree(first)
         if baseline_emitter is not None:
             baseline, baseline_response = emit("baseline", executable=baseline_emitter)
-            baseline_m = inspect(baseline, baseline_response, source, inputs)
+            baseline_m = inspect(baseline, baseline_response, source, baseline_inputs)
+            require(baseline_m["source_revision"] == m["source_revision"], "same synthetic revision")
+            require(all(x["git_status"] == "" for x in baseline_m["source_inputs"]), "clean old inventory")
             baseline_files = tree(baseline)
             artifacts = ["src/tt_um_controlled_fifo.v", "simulation/tt_um_controlled_fifo.v",
                          "src/config.json", "constraints/top.sdc", "info.yaml"]
             for path in artifacts:
                 require(baseline_files[path] == saved[path], "baseline artifact byte equality: " + path)
                 print(f"PASS baseline artifact {path}: bytes={len(saved[path])} sha256={digest(saved[path])}")
-            require(baseline_files == saved, "baseline whole-bundle byte equality")
-            require(baseline_m == m, "baseline manifest equality")
-            print(f"PASS baseline whole-bundle equality: {len(saved)} files; identical fixture source bytes/paths, "
-                  f"revision={m['source_revision']}, clean status; identity={m['identity']}")
+            provenance = {"identity", "files", "source_inputs"}
+            require({k: v for k, v in baseline_m.items() if k not in provenance} ==
+                    {k: v for k, v in m.items() if k not in provenance}, "baseline nonprovenance manifest facts")
+            if set(baseline_inputs) == set(inputs):
+                require(baseline_files == saved, "same-inventory baseline whole-bundle equality")
+                require(baseline_m == m, "same-inventory baseline manifest equality")
+            print(f"PASS baseline artifacts and nonprovenance facts; old inputs={len(baseline_inputs)}, "
+                  f"new inputs={len(inputs)}, revision={m['source_revision']}, clean status")
             print(f"PASS baseline emitter sha256={digest(baseline_emitter.read_bytes())}; "
                   f"current emitter sha256={digest(emitter.read_bytes())}")
         _, failure = emit("first", ok=False)

@@ -1,4 +1,9 @@
 (rule
  (alias runtest)
  (deps asic_dependency.py test_asic_dependency.py)
- (action (run python3 %{dep:test_asic_dependency.py})))
+  (action (run python3 %{dep:test_asic_dependency.py})))
+
+(rule
+ (alias runtest)
+ (deps check_project_cli.py)
+ (action (run python3 %{dep:check_project_cli.py} %{exe:../bin/project.exe})))

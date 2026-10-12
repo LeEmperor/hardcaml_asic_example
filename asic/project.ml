@@ -24,6 +24,25 @@ let pinout : Pinout.t =
       { Pinout.bank; bit; description }))
 ;;
 
+let source_inputs =
+  [ "dune-project"
+  ; "asic-dependency.json"
+  ; "README.md"
+  ; "lib/dune"
+  ; "lib/controlled_fifo.ml"
+  ; "lib/controlled_fifo.mli"
+  ; "asic/dune"
+  ; "asic/tt_wrapper.ml"
+  ; "asic/tt_wrapper.mli"
+  ; "asic/project.ml"
+  ; "asic/project.mli"
+  ; "asic/fifo_asic.ml"
+  ; "asic/fifo_asic.mli"
+  ; "bin/dune"
+  ; "bin/project.ml"
+  ]
+;;
+
 let create () =
   let open Or_error.Let_syntax in
   (* Ordinary core registers do not register Single_port_ram resources. *)
@@ -35,7 +54,8 @@ let create () =
       ; maximum = Time_float.Span.of_ns maximum
       })
   in
-  Project.create
+  Hardcaml_asic.Project.create
+    ~source_inputs
     ~name:"controlled_fifo_specimen"
     ~metadata:
       { title = "Controlled FIFO"
@@ -57,21 +77,4 @@ let create () =
     ~pinout
     ~policy
     ()
-;;
-
-let source_inputs =
-  [ "dune-project"
-  ; "asic-dependency.json"
-  ; "README.md"
-  ; "lib/dune"
-  ; "lib/controlled_fifo.ml"
-  ; "lib/controlled_fifo.mli"
-  ; "asic/dune"
-  ; "asic/tt_wrapper.ml"
-  ; "asic/tt_wrapper.mli"
-  ; "asic/declaration.ml"
-  ; "asic/declaration.mli"
-  ; "bin/dune"
-  ; "bin/emit_bundle.ml"
-  ]
 ;;

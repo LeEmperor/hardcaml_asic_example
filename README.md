@@ -1,11 +1,12 @@
 # Controlled FIFO ASIC specimen
 
 An independent Dune project containing a fixed Hardcaml FIFO core, a consumer-owned
-Tiny Tapeout wrapper, an ASIC declaration, a standalone bundle emitter, repeatable
+Tiny Tapeout wrapper, a shared Project declaration and CLI, repeatable
 bundle acceptance, and PDK-free Cyclesim and generated-Verilog tests. This is a
 **development specimen with an explicit consumer dependency record**.
 It uses `core`, `hardcaml`, `ppx_jane`, `ppx_hardcaml`, `yojson`, and a selectable
-development build of `hardcaml_asic` exposing the hardened `Resolved_flow.mli`.
+development build of `hardcaml_asic` exposing the hardened `Resolved_flow.mli` and
+the shared `Project.source_inputs`, `describe`, and `emit_bundle` API.
 The project declares Dune language 3.17 and has been built with Dune 3.24.2 and
 OCaml 5.2.0+ox. The record is not an opam pin. The installed
 Hardcaml interfaces under `~/.opam/5.2.0+ox/lib/hardcaml/` are the API authority.
@@ -64,7 +65,7 @@ dependencies. The shared opam package may expose an older API. Explicitly refres
 a private installation and activate it before ordinary builds:
 
 ```sh
-python3 scripts/asic_dependency.py refresh --source /absolute/path/to/hardcaml_asic --mode recorded
+python3 scripts/asic_dependency.py refresh --source /absolute/path/to/hardcaml_asic --mode development
 . .dev/asic/current/activate.sh
 python3 scripts/asic_dependency.py status --json
 dune build @all
@@ -88,7 +89,7 @@ revision is `1714764859274f80a9f5ad207421a04601824e99`; before recording it, the
 read-only command below checked its committed public interfaces for
 `Elaborated_project`, `Resolved_flow` and `?simulation_project`, plus its flow
 installation stanza. Real refresh/build evidence is recorded below; this command
-alone checks source interfaces:
+alone checked source interfaces under the earlier setup contract (historical command):
 
 ```sh
 python3 scripts/asic_dependency.py validate-source \
@@ -96,7 +97,16 @@ python3 scripts/asic_dependency.py validate-source \
   --revision 1714764859274f80a9f5ad207421a04601824e99
 ```
 
-For local edits, explicitly select **development** mode:
+**Project API transition:** the recorded `171476...` revision does not yet expose
+`Project.source_inputs`, `describe`, `emit_bundle`, and constructor `?source_inputs`.
+The strengthened check now rejects that recorded API, including the historical
+`validate-source` command above. Keep the record unchanged until its owner advances
+it. During this transition, explicitly refresh **development** bytes with the new
+API and re-activate. The recorded snapshot is still loaded for comparison, but
+API requirements apply to the selected snapshot. `validate-source` remains a
+read-only source check and reports `compiled: false` on success.
+
+For this transition and local edits, explicitly select **development** mode:
 
 ```sh
 python3 scripts/asic_dependency.py refresh --source /absolute/path/to/hardcaml_asic --mode development
@@ -118,7 +128,9 @@ and an atomically replaced `current` symlink. Each generation contains installed
 `lib/`, `bin/hardcaml-asic-flow`, `receipt.json` and `activate.sh`. Installation uses
 the final generation prefix; publication follows interface/runtime-file checks,
 CLI `--help`, an exact ocamlfind resolution check and compilation of a tiny external
-consumer using `Resolved_flow.t`, `Elaborated_project.t` and `Bundle.render`, plus
+consumer using `Resolved_flow.t`, `Elaborated_project.t`, `Bundle.render`, and the
+new Project constructor/inventory/description/emission signatures (including both
+optional emission arguments), plus
 a Dune executable link probe. Metadata pointing into the temporary capture is rejected.
 The release build uses `-p` (which implies `--root .`) in the capture directory and
 a relative `_build` directory so installed archive paths remain relocatable.
@@ -155,7 +167,7 @@ python3 scripts/test_asic_dependency.py
 dune runtest scripts --force
 ```
 
-All 13 setup tests also participate in ordinary `dune runtest`, using injected
+All 16 setup tests also participate in ordinary `dune runtest`, using injected
 processes without nested Dune calls. Real refresh runs its Dune consumer probe
 before publication.
 
@@ -262,7 +274,7 @@ boundary. These tests read no PDK files and render no bundles.
 | `uio_out[2]` | Registered response valid |
 | `uio_out[7:3]` | Occupancy 0–16, **pin 3 LSB** |
 
-All 24 UI/UO/UIO pin descriptions are declared in `asic/declaration.ml`.
+All 24 UI/UO/UIO pin descriptions are declared in `asic/project.ml`.
 `clk` connects directly to the core clock, `ena` to enable, and `!rst_n` to
 **synchronous** clear. Inputs and reset must be synchronous to `clk` and stable
 across its rising edge. There is **no implicit reset synchronizer**. Apply a reset
@@ -293,26 +305,35 @@ target revisions and geometry; pure resolution checks their structure without
 opening or verifying external files. Those target references do not pin this
 consumer's OCaml dependencies; the explicit consumer record above selects the provider.
 
-## Standalone bundle emitter
+## Project entry point and standalone CLI
 
-The Dune executable has this exact interface (both options required):
+`Fifo_asic.project ()` returns the generic `Hardcaml_asic.Project.t` declaration.
+The façade also retains `Fifo_asic.Tt_wrapper` for wrapper tests. Inventory lives
+in `asic/project.ml` and is passed to the generic constructor.
+
+The Dune executable has these subcommands (both emit options required):
 
 ```sh
-dune exec bin/emit_bundle.exe -- \
+dune exec bin/project.exe -- describe
+dune exec bin/project.exe -- emit \
   --source-root /absolute/path/to/consumer-source \
   --output-dir /absolute/path/to/new-or-empty-bundle
 ```
 
-The built `_build/default/bin/emit_bundle.exe` is also directly invocable with
-the same flags. The source root supplies provenance and declared input bytes;
+`describe` prints the shared `Hardcaml_asic.Project.describe` Sexp: local declaration
+facts, **not a public Workbench provider schema**. It does not elaborate, inspect
+Git, create output directories, or run EDA. No arguments or invalid commands exit
+2 with usage; `--help` exits 0. There is no expensive default or legacy CLI shim.
+
+The built `_build/default/bin/project.exe` is also directly invocable with
+the same subcommands. The source root supplies provenance and declared input bytes;
 it does not rebuild the executable. Use an executable built from the matching
 sources. The explicit root allows fixture-based acceptance to supply a
 synthetic committed source checkout without altering the actual project checkout.
 
-The emitter declares the project, resolves Implementation through the public
-hardened `Resolved_flow` boundary, elaborates Simulation separately, then calls `Bundle.render`
-with `~simulation_project`
-and `Bundle.write`. The library owns RTL/config/SDC/metadata/manifest emission and
+The emitter creates `Fifo_asic.project ()` and calls `Hardcaml_asic.Project.emit_bundle`.
+The shared API owns implementation resolution, default simulation elaboration,
+rendering and writing. The library owns RTL/config/SDC/metadata/manifest emission and
 provenance. Success prints one JSON line:
 
 ```json
@@ -328,7 +349,7 @@ read-only Git inspection and preserves dirty/untracked input statuses. A revisio
 alone establishes neither a clean working tree nor a dependency pin. The emitter does not create a commit or
 fabricate a revision to bypass the provenance requirement.
 
-The explicit `Declaration.source_inputs` inventory is:
+The explicit `Hardcaml_asic.Project.source_inputs` inventory has 15 paths:
 
 ```text
 dune-project
@@ -340,10 +361,12 @@ lib/controlled_fifo.mli
 asic/dune
 asic/tt_wrapper.ml
 asic/tt_wrapper.mli
-asic/declaration.ml
-asic/declaration.mli
+asic/project.ml
+asic/project.mli
+asic/fifo_asic.ml
+asic/fifo_asic.mli
 bin/dune
-bin/emit_bundle.ml
+bin/project.ml
 ```
 
 This covers all consumer generation inputs, including wrapper, declaration,
@@ -355,18 +378,18 @@ Local refresh receipts and setup scripts are not hardware generation inputs.
 ## Bundle and generated RTL acceptance
 
 For acceptance against the **actual checkout**, activate and build first, then use
-a fresh ignored work directory (the following path is preserved from slice 2;
+a fresh ignored work directory (the following path is used for slice 3 evidence;
 choose another fresh name when rerunning):
 
 ```sh
 . .dev/asic/current/activate.sh
 dune build @all
 python3 acceptance/check_bundle.py \
-  --emitter _build/default/bin/emit_bundle.exe \
+  --emitter _build/default/bin/project.exe \
   --exporter _build/default/acceptance/export_trace.exe \
   --source-root /home/wayne/devel/jane/hardcaml_asic_example \
   --bench acceptance/replay.v --require-rtl --real-checkout \
-  --work-dir .dev/emitter-checks/slice2
+  --work-dir .dev/emitter-checks/project-entrypoint-slice3
 ```
 
 This mode performs only read-only Git inspection. It emits `first/` and `second/`,
@@ -377,7 +400,7 @@ The shared trace exporter and replay bench independently compile and simulate th
 actual first bundle's synthesis and simulation RTL, including negative-oracle
 checks. Traces and both compiled `.vvp` files remain alongside the bundles.
 
-`acceptance/check_bundle.py` obtains the actual `Declaration.source_inputs` list
+`acceptance/check_bundle.py` obtains the actual `Hardcaml_asic.Project.source_inputs` list
 from `acceptance/export_trace.exe`, copies just those files into a temporary
 source tree, and initializes a **synthetic local repository** there. It never
 copies `.git` or `_build` and never commits the consumer checkout. The only fixture
@@ -393,19 +416,24 @@ executable (kept outside the source tree) after verifying its trusted hash:
 
 ```sh
 python3 acceptance/check_bundle.py \
-  --emitter _build/default/bin/emit_bundle.exe \
+  --emitter _build/default/bin/project.exe \
   --exporter _build/default/acceptance/export_trace.exe \
   --source-root . --bench acceptance/replay.v --require-rtl \
-  --baseline-emitter /absolute/path/to/saved-pre-migration.exe
+  --baseline-emitter /absolute/path/to/saved-pre-migration.exe \
+  --baseline-source-root /absolute/path/to/saved-consumer-source \
+  --baseline-inputs /absolute/path/to/saved-inputs.txt
 ```
 
-Both executables read the same synthetic fixture, with identical source bytes,
-paths, revision and status. The script checks byte equality for synthesis RTL,
-simulation RTL, config, SDC and info, then the entire bundle including the manifest
-and copied inputs. It prints artifact and executable hashes and bundle identity.
-This isolates executable behavior from source-provenance changes; old and modified
-source snapshots naturally have different input hashes and may have different
-manifests. Ordinary and strict aliases need no baseline executable.
+The baseline uses its old
+flags; the current executable uses `emit`. The fixture stages the union of both
+inventories at one synthetic revision, restoring **only old-only paths** from the
+saved source snapshot. Shared paths keep current bytes. Each bundle is inspected
+against its own inventory. Comparison requires byte-identical synthesis RTL,
+simulation RTL, config, SDC and info, and equal nonprovenance manifest facts.
+Different inventories naturally have different manifests/identities. Repeated new
+emission still requires whole-tree equality. For an old-CLI baseline with the same
+inventory, omit both baseline source/inventory options; whole-bundle equality is
+then also required. Ordinary and strict aliases need no baseline executable.
 
 Bundle checks cover:
 
@@ -446,35 +474,49 @@ expected response** at trace index zero; a successful negative run fails accepta
 
 ### Evidence and remaining limits
 
-On 2026-10-12, actual recorded refresh from
-`/home/wayne/devel/jane/hardcaml_asic` with `--remove-source-build-override` passed,
-followed in an activated child shell by plain `dune build @all`,
-`dune runtest --force` and `dune build @acceptance-strict --force`, with no manual
-OCAMLPATH override. Core and wrapper Cyclesim each passed 7,330 directed plus
-20,017 seeded/reset/drain edges; public resolution and all 13 setup tests passed.
-Both generated RTL source sets passed 11,429 edges and rejected the negative
-oracle. Fixture bundle checks passed with two tracked edits and five failure cases.
+On 2026-10-12, slice 3 ran the normal managed refresh:
 
-Successful prefixes and receipts under `.dev/asic/generations/`:
+```sh
+python3 scripts/asic_dependency.py refresh \
+  --source /home/wayne/devel/jane/hardcaml_asic --mode development
+```
 
-| Mode | Generation (prefix) | Receipt |
-| --- | --- | --- |
-| recorded | `2cd5adeb421c4b58b288f1f29e802932` | `<prefix>/receipt.json` |
-| development (published current) | `481514db03934614a1ca4e25815e2bac` | `<prefix>/receipt.json` |
+It published `.dev/asic/generations/69a5db1892234a28b0884442ab0291f1`, with
+`receipt.json` and `activate.sh` in that prefix. The observed provider base was
+`82c0d7f7fbaa2d1796427de1037644946ceb2294`; captured snapshot SHA-256 was
+`64b10f0e17e348105053f2f0c095d97bf2a8397a096b135b603c45ca43b2b6ce`.
+Captured bytes differ from both the observed base and recorded snapshot.
+The existing removal of the provider's manual `_build/install/default/lib`
+override was carried forward. The refresh compiled the installed API and Dune
+probes before publication.
 
-Both observed provider base `1714764859274f80a9f5ad207421a04601824e99`.
-Recorded mode used exactly the record's committed bytes. Development captured
-dirty `docs/README.md` and `docs/development/consumer-dependency-workflow.md`;
-the read-only comparison in `.dev/provider-inputs.json` found no code changes.
-Its receipt reports captured/base and baseline differences honestly. Each refresh
-compiled the API and Dune probes. After development publication, the already
-activated shell still resolved the recorded library and CLI; re-sourcing selected
-the development generation for both and plain `dune build @all` passed. Status
-then reported `active_is_published` and `active_library_path_is_first` true.
-The docs-only provider change did not justify repeating the full functional suite;
-the real-checkout emission command above exercises the development installation.
+After activation in a child shell, `ocamlfind query hardcaml_asic` and
+`command -v hardcaml-asic-flow` selected that same private generation. Status
+reported `active_is_published` and `active_library_path_is_first` true, with the
+development/dirty/base-mismatch flags true. Running the same refresh command
+with `--mode recorded` rejected the actual unchanged `171476...` record with
+`incompatible Project.create API`, preserving the successful development selection.
 
-Both installed CLIs' `hardcaml-asic-flow --version --json` report package `0.1.0`,
+Plain `dune build @all`, `dune runtest --force`,
+`dune build @acceptance-strict --force`, and `dune exec bin/project.exe -- describe`
+passed in the activated shell without a manual OCAMLPATH override. Core and wrapper
+Cyclesim each passed 7,330 directed plus 20,017 seeded/reset/drain edges. Public
+resolution, all 16 setup tests, and CLI purity/usage checks passed. Each generated
+RTL source set passed 11,429 edges and rejected the negative oracle. Fixture bundle
+checks passed with repeat whole-tree equality, two tracked edits and five failure cases.
+
+The saved pre-migration executable at
+`/tmp/opencode/project-api-baseline-k9wvcigz/emit_bundle.exe` was verified before use:
+SHA-256 `739024f92ae88bf45d48e63ed67673b83a73c5fb4c5078db16efe8bbdcfe7cc1`.
+The optional baseline command above passed with its sibling `consumer-source/`
+and `inputs.txt`. All five generated artifacts and nonprovenance manifest facts
+were equal; inventories differ (13 old inputs, 15 new), so this is not old/new
+whole-bundle equality. Both RTL source sets also passed strict replay and negative
+oracles. Real-checkout evidence uses the command and preserved directory above;
+its `evidence.json` records actual dirty/untracked status rather than a clean-tree claim.
+This README is a declared input and must be finalized before capturing that evidence.
+
+The selected installed CLI's `hardcaml-asic-flow --version --json` reports package `0.1.0`,
 `source.stamped=false`, state `unknown`, and null revision, inventory digest and
 library-artifact match. Receipts are local selection evidence, not generator stamps.
 

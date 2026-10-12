@@ -6,7 +6,7 @@ let require label condition = if not condition then failwith label
 let near a b = Float.(abs (a -. b) < 1e-6)
 
 let () =
-  let project = Fifo_asic.Declaration.create () |> Or_error.ok_exn in
+  let project = Fifo_asic.project () |> Or_error.ok_exn in
   let r = Project.elaborate_for_flow project |> Or_error.ok_exn in
   let simulation_project = Project.elaborate project ~mode:Simulation |> Or_error.ok_exn in
   let check_elaborated_project elaborated_project =
