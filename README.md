@@ -3,11 +3,11 @@
 An independent Dune project containing a fixed Hardcaml FIFO core, a consumer-owned
 Tiny Tapeout wrapper, an ASIC declaration, a standalone bundle emitter, repeatable
 bundle acceptance, and PDK-free Cyclesim and generated-Verilog tests. This is a
-**development specimen, not dependency-pinned**.
+**development specimen with an explicit consumer dependency record**.
 It uses `core`, `hardcaml`, `ppx_jane`, `ppx_hardcaml`, `yojson`, and a selectable
 development build of `hardcaml_asic` exposing the hardened `Resolved_flow.mli`.
 The project declares Dune language 3.17 and has been built with Dune 3.24.2 and
-OCaml 5.2.0+ox. No opam package or invented pin is supplied. The installed
+OCaml 5.2.0+ox. The record is not an opam pin. The installed
 Hardcaml interfaces under `~/.opam/5.2.0+ox/lib/hardcaml/` are the API authority.
 
 The generic `lib/`, `test_support/`, and `test/` stanzas remain independent of the
@@ -59,23 +59,105 @@ Consecutive pops may keep it high. `full` and `empty` depend only on occupancy.
 
 ## Build and run
 
-Run from this repository using the existing toolchain environment. Select the
-parent library directory of the intended ASIC installation; the shared installed
-package may be older and is not an equivalent API. For this workspace, one usable
-development installation is `/home/wayne/devel/jane/hardcaml_asic/_build/install/default/lib`.
-That sibling location is an example, not a requirement or a release pin. Preserve
-any existing OCAMLPATH suffix and apply the selection to each command:
+Run from this repository using an already available compiler, Dune, ocamlfind and
+dependencies. The shared opam package may expose an older API. Explicitly refresh
+a private installation and activate it before ordinary builds:
 
 ```sh
-ASIC_LIBDIR=/home/wayne/devel/jane/hardcaml_asic/_build/install/default/lib
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" dune build @all
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" dune runtest --force
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" dune build @acceptance-strict --force
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" dune exec test/fifo_test.exe -- --directed
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" dune exec test/fifo_test.exe -- --seed 42 --cycles 100000
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" dune exec asic_test/wrapper_test.exe
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" dune exec asic_test/resolution_test.exe
+python3 scripts/asic_dependency.py refresh --source /absolute/path/to/hardcaml_asic --mode recorded
+. .dev/asic/current/activate.sh
+python3 scripts/asic_dependency.py status --json
+dune build @all
+dune runtest --force
+dune build @acceptance-strict --force
+dune exec test/fifo_test.exe -- --directed
+dune exec test/fifo_test.exe -- --seed 42 --cycles 100000
+dune exec asic_test/wrapper_test.exe
+dune exec asic_test/resolution_test.exe
 ```
+
+`db` can replace the plain build command if that local wrapper preserves the
+activated environment. No sibling checkout path is assumed by the tool.
+
+### Consumer dependency setup
+
+`asic-dependency.json` records schema, package, repository URL and full revision.
+Normal **recorded** refresh reads committed bytes at that revision from the
+explicit local repository, ignoring working edits. It never fetches. The initial
+revision is `1714764859274f80a9f5ad207421a04601824e99`; before recording it, the
+read-only command below checked its committed public interfaces for
+`Elaborated_project`, `Resolved_flow` and `?simulation_project`, plus its flow
+installation stanza. Real refresh/build evidence is recorded below; this command
+alone checks source interfaces:
+
+```sh
+python3 scripts/asic_dependency.py validate-source \
+  --source /absolute/path/to/hardcaml_asic \
+  --revision 1714764859274f80a9f5ad207421a04601824e99
+```
+
+For local edits, explicitly select **development** mode:
+
+```sh
+python3 scripts/asic_dependency.py refresh --source /absolute/path/to/hardcaml_asic --mode development
+. .dev/asic/current/activate.sh
+python3 scripts/asic_dependency.py status --json
+dune build @all
+```
+
+Development captures tracked files and relevant nonignored untracked files,
+including deletions and safe internal file symlinks, excluding `.git`, `_build`,
+`.toolchain`, `.dev`, Python caches and the selected store. Two capture comparisons
+reject observed concurrent edits; this is not an atomic filesystem snapshot or a
+clean-checkout claim. Builds use captured bytes in a private temporary directory.
+Neither mode changes the baseline record, opam pins or shared source `_build`.
+Missing dependencies/revisions and incompatible source fail with no provisioning.
+
+The ignored `.dev/asic/` store contains `.owner`, `writer.lock`, `generations/<id>/`
+and an atomically replaced `current` symlink. Each generation contains installed
+`lib/`, `bin/hardcaml-asic-flow`, `receipt.json` and `activate.sh`. Installation uses
+the final generation prefix; publication follows interface/runtime-file checks,
+CLI `--help`, an exact ocamlfind resolution check and compilation of a tiny external
+consumer using `Resolved_flow.t`, `Elaborated_project.t` and `Bundle.render`, plus
+a Dune executable link probe. Metadata pointing into the temporary capture is rejected.
+The release build uses `-p` (which implies `--root .`) in the capture directory and
+a relative `_build` directory so installed archive paths remain relocatable.
+One writer holds a nonblocking store lock. Failures retain the previous selection;
+old and failed generations are retained, with no automatic garbage collection.
+An existing unowned store destination is rejected. Global `--store /absolute/path`
+(before the subcommand) selects a fresh private store; source that store's
+`current/activate.sh`. Global `--record PATH` selects another dependency record.
+Symlinked store paths and colons/newlines are rejected.
+
+**Re-source after every successful refresh.** Activation pins OCAMLPATH and PATH
+to a specific generation, so an active shell stays on its prior generation until
+reactivated. It removes known managed prefixes and preserves unrelated entries.
+To explicitly retire the selected source's previous manual override, add
+`--remove-source-build-override` to refresh; its exact
+`SOURCE/_build/install/default/lib` path is recorded for removal on activation.
+Without that flag, manual paths are preserved after the selected generation.
+POSIX shell activation supports spaces and apostrophes in paths.
+
+`status --json` is read-only and reports the published generation separately from
+the caller's active-generation marker and OCAMLPATH, including an older active
+generation, development override, captured differences from its observed base,
+and baseline mismatch. Receipt facts describe refresh inputs, not today's checkout.
+The snapshot checksum is **local bookkeeping, not P6.5 source stamping**; the CLI
+reports unstamped in the validated installations. See the authoritative
+[consumer dependency workflow](../hardcaml_asic/docs/development/consumer-dependency-workflow.md)
+for scope.
+
+PDK-free setup tests use injected build/install/compiler/CLI processes and
+disposable Git fixtures with `Bundle test <bundle@test.invalid>` identities:
+
+```sh
+python3 scripts/test_asic_dependency.py
+dune runtest scripts --force
+```
+
+All 13 setup tests also participate in ordinary `dune runtest`, using injected
+processes without nested Dune calls. Real refresh runs its Dune consumer probe
+before publication.
 
 The strict alias requires both `iverilog` and `vvp` on PATH. Ordinary `runtest`
 still runs bundle acceptance when either is absent, printing an explicit RTL
@@ -93,7 +175,7 @@ The public API now uses `Elaborated_project` (formerly `Build`) and
 aliases: consumers must update source and recompile against the renamed provider.
 This example uses the new names for both Implementation and Simulation elaboration.
 The rename preserves persisted bundle keys, ordering and hashing; it does not
-provide binary compatibility or pin the development dependency.
+provide binary compatibility. Dependency selection is handled by the setup above.
 
 The ordinary core test executable accepts either `--directed` or **both** `--seed INT`
 and `--cycles NONNEGATIVE_INT`; there are no implicit random defaults.
@@ -209,14 +291,14 @@ minimum constraints. They are not measured board timing, a reset CDC solution,
 or evidence of physical timing/area/DRC acceptance. The library supplies reference
 target revisions and geometry; pure resolution checks their structure without
 opening or verifying external files. Those target references do not pin this
-consumer's OCaml dependencies. No dependency lock or source revision is invented.
+consumer's OCaml dependencies; the explicit consumer record above selects the provider.
 
 ## Standalone bundle emitter
 
 The Dune executable has this exact interface (both options required):
 
 ```sh
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" dune exec bin/emit_bundle.exe -- \
+dune exec bin/emit_bundle.exe -- \
   --source-root /absolute/path/to/consumer-source \
   --output-dir /absolute/path/to/new-or-empty-bundle
 ```
@@ -240,16 +322,17 @@ provenance. Success prints one JSON line:
 Failures print the library diagnostic plus source-provenance guidance to stderr
 and exit 1; missing CLI arguments exit 2. Bundle output must be new or empty;
 existing files are not overwritten. A write failure may leave partial output.
-Rendering requires a source checkout with at least one commit. The owner has made
-the initial commit; the audit observed `main` at
-`8e4577f6c72cc689cbc92daeb5f8ae083cf970e0`. That ref alone establishes neither a
-clean working tree nor a dependency pin. The emitter does not create a commit or
+Rendering requires a source checkout with at least one commit. The owner's checkout
+satisfies that prerequisite; real acceptance verifies its current revision using
+read-only Git inspection and preserves dirty/untracked input statuses. A revision
+alone establishes neither a clean working tree nor a dependency pin. The emitter does not create a commit or
 fabricate a revision to bypass the provenance requirement.
 
 The explicit `Declaration.source_inputs` inventory is:
 
 ```text
 dune-project
+asic-dependency.json
 README.md
 lib/dune
 lib/controlled_fifo.ml
@@ -265,9 +348,34 @@ bin/emit_bundle.ml
 
 This covers all consumer generation inputs, including wrapper, declaration,
 metadata, build stanzas and emitter. Tests/model are not generation inputs;
-dependency libraries are not copied into this inventory.
+dependency libraries are not copied into this inventory. `asic-dependency.json`
+captures the consumer's dependency expectation, not proof of linked library identity.
+Local refresh receipts and setup scripts are not hardware generation inputs.
 
 ## Bundle and generated RTL acceptance
+
+For acceptance against the **actual checkout**, activate and build first, then use
+a fresh ignored work directory (the following path is preserved from slice 2;
+choose another fresh name when rerunning):
+
+```sh
+. .dev/asic/current/activate.sh
+dune build @all
+python3 acceptance/check_bundle.py \
+  --emitter _build/default/bin/emit_bundle.exe \
+  --exporter _build/default/acceptance/export_trace.exe \
+  --source-root /home/wayne/devel/jane/hardcaml_asic_example \
+  --bench acceptance/replay.v --require-rtl --real-checkout \
+  --work-dir .dev/emitter-checks/slice2
+```
+
+This mode performs only read-only Git inspection. It emits `first/` and `second/`,
+compares complete trees byte-for-byte, checks every manifest file/input hash and
+copied byte, and checks each input's actual Git status and the checkout revision.
+`evidence.json` preserves those observations, including whole-checkout status.
+The shared trace exporter and replay bench independently compile and simulate the
+actual first bundle's synthesis and simulation RTL, including negative-oracle
+checks. Traces and both compiled `.vvp` files remain alongside the bundles.
 
 `acceptance/check_bundle.py` obtains the actual `Declaration.source_inputs` list
 from `acceptance/export_trace.exe`, copies just those files into a temporary
@@ -284,7 +392,7 @@ For before/after API compatibility, optionally supply a saved pre-migration
 executable (kept outside the source tree) after verifying its trusted hash:
 
 ```sh
-OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" python3 acceptance/check_bundle.py \
+python3 acceptance/check_bundle.py \
   --emitter _build/default/bin/emit_bundle.exe \
   --exporter _build/default/acceptance/export_trace.exe \
   --source-root . --bench acceptance/replay.v --require-rtl \
@@ -338,12 +446,37 @@ expected response** at trace index zero; a successful negative run fails accepta
 
 ### Evidence and remaining limits
 
-The independent `dune build @all`, forced ordinary tests and strict acceptance
-passed with the development provider path shown above. Core and wrapper Cyclesim
-each passed 7,330 directed plus 20,017 seeded/reset/drain edges (20,000 traffic
-cycles); public resolution passed. Both generated RTL source sets passed 11,429
-edges and each rejected the negative oracle. Bundle checks passed with two tracked
-edits and all five failure cases.
+On 2026-10-12, actual recorded refresh from
+`/home/wayne/devel/jane/hardcaml_asic` with `--remove-source-build-override` passed,
+followed in an activated child shell by plain `dune build @all`,
+`dune runtest --force` and `dune build @acceptance-strict --force`, with no manual
+OCAMLPATH override. Core and wrapper Cyclesim each passed 7,330 directed plus
+20,017 seeded/reset/drain edges; public resolution and all 13 setup tests passed.
+Both generated RTL source sets passed 11,429 edges and rejected the negative
+oracle. Fixture bundle checks passed with two tracked edits and five failure cases.
+
+Successful prefixes and receipts under `.dev/asic/generations/`:
+
+| Mode | Generation (prefix) | Receipt |
+| --- | --- | --- |
+| recorded | `2cd5adeb421c4b58b288f1f29e802932` | `<prefix>/receipt.json` |
+| development (published current) | `481514db03934614a1ca4e25815e2bac` | `<prefix>/receipt.json` |
+
+Both observed provider base `1714764859274f80a9f5ad207421a04601824e99`.
+Recorded mode used exactly the record's committed bytes. Development captured
+dirty `docs/README.md` and `docs/development/consumer-dependency-workflow.md`;
+the read-only comparison in `.dev/provider-inputs.json` found no code changes.
+Its receipt reports captured/base and baseline differences honestly. Each refresh
+compiled the API and Dune probes. After development publication, the already
+activated shell still resolved the recorded library and CLI; re-sourcing selected
+the development generation for both and plain `dune build @all` passed. Status
+then reported `active_is_published` and `active_library_path_is_first` true.
+The docs-only provider change did not justify repeating the full functional suite;
+the real-checkout emission command above exercises the development installation.
+
+Both installed CLIs' `hardcaml-asic-flow --version --json` report package `0.1.0`,
+`source.stamped=false`, state `unknown`, and null revision, inventory digest and
+library-artifact match. Receipts are local selection evidence, not generator stamps.
 
 This is deterministic functional RTL simulation, not a gate-level timing test or
 formal proof. Bench delays allow combinational settling and do not model board
@@ -351,6 +484,6 @@ setup/hold or metastability; the 48 MHz and I/O constraints are analysis assumpt
 No synthesis, physical EDA, PDK validation, area, timing closure or DRC acceptance
 has been run. Synthetic fixture revisions establish test provenance only, not a
 release revision for this consumer. The owner's initial commit satisfies the
-commit prerequisite for normal emission; a committed dependency pin/lock remains
-absent. Acceptance selects a local development provider explicitly; it does not
-establish reproducibility across unpinned provider/toolchain revisions.
+commit prerequisite for normal emission. The consumer dependency record selects
+a provider revision; this acceptance does not establish reproducibility across
+provider/toolchain revisions or authoritative P6.5 linked-artifact identity.

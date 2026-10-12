@@ -32,6 +32,7 @@ def digest(data):
 
 
 def inspect(output, response, source, inputs):
+    require("asic-dependency.json" in inputs, "consumer dependency expectation is an input")
     files = tree(output)
     m = json.loads(files["manifest.json"])
     require(response == {"identity": m["identity"], "output_dir": str(output)}, "identity response")
@@ -87,16 +88,91 @@ def inspect(output, response, source, inputs):
     return m
 
 
+def replay(first, exporter, bench, tmp, env, require_rtl):
+    tools = [shutil.which(tool, path=env.get("PATH")) for tool in ("iverilog", "vvp")]
+    if not all(tools):
+        require(not require_rtl, "strict acceptance requires both iverilog and vvp")
+        print("SKIP RTL: requires both iverilog and vvp; use @acceptance-strict to require them")
+        return
+    trace = run([exporter], env).stdout
+    rows = trace.splitlines()
+    trace_file = tmp / "trace.txt"
+    trace_file.write_text(trace)
+    corrupted = rows.copy()
+    fields = corrupted[0].split()
+    fields[7] = str(int(fields[7]) ^ 1)
+    corrupted[0] = " ".join(fields)
+    bad = tmp / "bad.txt"
+    bad.write_text("\n".join(corrupted) + "\n")
+    manifest = json.loads((first / "manifest.json").read_text())
+    for mode in ("synthesis", "simulation"):
+        exe = tmp / (mode + ".vvp")
+        run([tools[0], "-g2012", "-s", "replay", "-o", exe, bench,
+             *[first / p for p in manifest[mode + "_sources"]]], env)
+        result = run([tools[1], exe, "+trace=" + str(trace_file)], env)
+        require(f"PASS RTL edges={len(rows)} " in result.stdout, "all trace rows replayed")
+        print(mode + ": " + result.stdout.strip())
+        rejected = run([tools[1], exe, "+trace=" + str(bad)], env, ok=False)
+        require("trace=0" in rejected.stdout and "expected=" in rejected.stdout and "actual=" in rejected.stdout, "negative oracle context")
+        print(mode + ": PASS negative oracle rejected corrupted response at trace=0")
+
+
+def real_checkout(emitter, exporter, source, bench, work, require_rtl):
+    # Read-only repository inspection; preserve actual dirty/untracked input status.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1")
+    work.mkdir(parents=True, exist_ok=False)
+    def git(*args):
+        return run(["git", "-C", source, *args], env).stdout
+    inputs = run([exporter, "--inputs"], env).stdout.splitlines()
+    require(inputs and len(inputs) == len(set(inputs)), "unique declared inputs")
+    revision = git("rev-parse", "HEAD").strip()
+    statuses = {p: git("status", "--porcelain", "--", p).rstrip("\n") for p in inputs}
+    checkout_status = git("status", "--porcelain", "--untracked-files=all")
+    manifests = []
+    for name in ("first", "second"):
+        output = work / name
+        response = json.loads(run([emitter, "--source-root", source, "--output-dir", output], env).stdout)
+        m = inspect(output, response, source, inputs)
+        require(m["source_revision"] == revision, "actual checkout revision")
+        require({x["path"]: x["git_status"] for x in m["source_inputs"]} == statuses,
+                "actual input statuses")
+        manifests.append(m)
+    require(tree(work / "first") == tree(work / "second"), "real-checkout complete tree byte equality")
+    require(git("rev-parse", "HEAD").strip() == revision
+            and git("status", "--porcelain", "--untracked-files=all") == checkout_status,
+            "checkout provenance stable during emission")
+    evidence = {"source_root": str(source), "source_revision": revision,
+                "checkout_status": checkout_status, "input_statuses": statuses,
+                "identity": manifests[0]["identity"], "files": len(tree(work / "first"))}
+    (work / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    print("PASS real-checkout repeat bytes, inventory/hashes/copied inputs and provenance: "
+          + json.dumps(evidence))
+    replay(work / "first", exporter, bench, work, env, require_rtl)
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ["emitter", "exporter", "source-root", "bench"]:
         parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--require-rtl", action="store_true")
+    parser.add_argument("--real-checkout", action="store_true",
+                        help="Emit from the actual source root; only read-only Git inspection")
+    parser.add_argument("--work-dir", type=Path,
+                        help="Fresh preserved output directory required with --real-checkout")
     parser.add_argument("--baseline-emitter", type=Path,
                         help="Saved pre-migration executable to compare on the identical source fixture")
     args = parser.parse_args()
     emitter, exporter, source_root, bench = [p.resolve() for p in (args.emitter, args.exporter, args.source_root, args.bench)]
     baseline_emitter = args.baseline_emitter.resolve() if args.baseline_emitter else None
+    if args.real_checkout:
+        if args.work_dir is None or baseline_emitter is not None:
+            parser.error("--real-checkout requires --work-dir and excludes --baseline-emitter")
+        real_checkout(emitter, exporter, source_root, bench, args.work_dir.resolve(), args.require_rtl)
+        return
+    if args.work_dir is not None:
+        parser.error("--work-dir requires --real-checkout")
     with tempfile.TemporaryDirectory(prefix="fifo-acceptance-") as tmp:
         tmp = Path(tmp)
         # Remove inherited repository/config/identity selectors. No shared config is read
@@ -186,32 +262,7 @@ def main():
         require("source input is missing" in failure.stderr and tree(first) == saved, "render failure preserves existing bytes")
         print("PASS bundle: repeat bytes, inventory/hashes, identity, target/config/SDC, 2 tracked edits, 5 failure cases")
 
-        tools = [shutil.which(tool, path=env.get("PATH")) for tool in ("iverilog", "vvp")]
-        if not all(tools):
-            require(not args.require_rtl, "strict acceptance requires both iverilog and vvp")
-            print("SKIP RTL: requires both iverilog and vvp; use @acceptance-strict to require them")
-            return
-        trace = run([exporter], env).stdout
-        rows = trace.splitlines()
-        trace_file = tmp / "trace.txt"
-        trace_file.write_text(trace)
-        corrupted = rows.copy()
-        fields = corrupted[0].split()
-        fields[7] = str(int(fields[7]) ^ 1)
-        corrupted[0] = " ".join(fields)
-        bad = tmp / "bad.txt"
-        bad.write_text("\n".join(corrupted) + "\n")
-        manifest = json.loads((first / "manifest.json").read_text())
-        for mode in ("synthesis", "simulation"):
-            exe = tmp / (mode + ".vvp")
-            run([tools[0], "-g2012", "-s", "replay", "-o", exe, bench,
-                 *[first / p for p in manifest[mode + "_sources"]]], env)
-            result = run([tools[1], exe, "+trace=" + str(trace_file)], env)
-            require(f"PASS RTL edges={len(rows)} " in result.stdout, "all trace rows replayed")
-            print(mode + ": " + result.stdout.strip())
-            rejected = run([tools[1], exe, "+trace=" + str(bad)], env, ok=False)
-            require("trace=0" in rejected.stdout and "expected=" in rejected.stdout and "actual=" in rejected.stdout, "negative oracle context")
-            print(mode + ": PASS negative oracle rejected corrupted response at trace=0")
+        replay(first, exporter, bench, tmp, env, args.require_rtl)
 
 
 if __name__ == "__main__":

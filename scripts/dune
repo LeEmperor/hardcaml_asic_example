@@ -1,0 +1,4 @@
+(rule
+ (alias runtest)
+ (deps asic_dependency.py test_asic_dependency.py)
+ (action (run python3 %{dep:test_asic_dependency.py})))

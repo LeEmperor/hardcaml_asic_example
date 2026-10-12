@@ -5,7 +5,7 @@
 
 (rule
  (alias runtest)
- (deps check_bundle.py replay.v ../README.md ../dune-project
+  (deps check_bundle.py replay.v ../README.md ../dune-project ../asic-dependency.json
   (source_tree ../lib) (source_tree ../asic) (source_tree ../bin))
  (action
   (run python3 %{dep:check_bundle.py} --emitter %{exe:../bin/emit_bundle.exe}
@@ -13,7 +13,7 @@
 
 (rule
  (alias acceptance-strict)
- (deps check_bundle.py replay.v ../README.md ../dune-project
+  (deps check_bundle.py replay.v ../README.md ../dune-project ../asic-dependency.json
   (source_tree ../lib) (source_tree ../asic) (source_tree ../bin))
  (action
   (run python3 %{dep:check_bundle.py} --require-rtl --emitter %{exe:../bin/emit_bundle.exe}

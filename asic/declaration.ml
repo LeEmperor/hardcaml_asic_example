@@ -61,6 +61,7 @@ let create () =
 
 let source_inputs =
   [ "dune-project"
+  ; "asic-dependency.json"
   ; "README.md"
   ; "lib/dune"
   ; "lib/controlled_fifo.ml"
