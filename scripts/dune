@@ -7,3 +7,8 @@
  (alias runtest)
  (deps check_project_cli.py)
  (action (run python3 %{dep:check_project_cli.py} %{exe:../bin/project.exe})))
+
+(rule
+ (alias runtest)
+ (deps ../bootstrap.sh test_bootstrap.py)
+ (action (run python3 %{dep:test_bootstrap.py})))

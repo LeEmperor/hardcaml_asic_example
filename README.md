@@ -61,8 +61,13 @@ Consecutive pops may keep it high. `full` and `empty` depend only on occupancy.
 ## Build and run
 
 Run from this repository using an already available compiler, Dune, ocamlfind and
-dependencies. The shared opam package may expose an older API. Explicitly refresh
-a private installation and activate it before ordinary builds:
+dependencies. First obtain and activate a compatible installed `hardcaml_asic`
+provider: a normal opam installation (`opam install hardcaml_asic`, then
+`eval "$(opam env)"`) suffices when it exposes the required Project API and provision
+CLI. The finished consumer needs no ASIC library source checkout. The shared opam
+package may currently expose an older API; for this development transition,
+explicitly refresh a private installation from a selected checkout and activate it
+before ordinary builds:
 
 ```sh
 python3 scripts/asic_dependency.py refresh --source /absolute/path/to/hardcaml_asic --mode development
@@ -79,6 +84,79 @@ dune exec asic_test/resolution_test.exe
 
 `db` can replace the plain build command if that local wrapper preserves the
 activated environment. No sibling checkout path is assumed by the tool.
+
+### Flow-tool bootstrap (separate from library development refresh)
+
+After installing/activating the provider above, diagnose the selected flow-tool
+root without changing it:
+
+```sh
+./bootstrap.sh --check --no-container
+```
+
+`bootstrap.sh` requires `hardcaml-asic-flow` on PATH and execs its `provision`
+subcommand. The installed provider owns provisioning logic, locked versions and
+option validation before provisioning. The wrapper neither installs nor refreshes
+the provider. `./bootstrap.sh --help` forwards to provider help safely. Running
+`./bootstrap.sh` with no arguments is an explicit request to provision.
+
+Once host prerequisites are available, authorize actual provisioning by running:
+
+```sh
+./bootstrap.sh --python /absolute/path/to/python3.11
+# Or ./bootstrap.sh when the provider's locked base interpreter is already available.
+```
+
+Provisioning `--python PATH` selects the **base interpreter for new virtual
+environments**, not a flow run's virtual-environment Python. It must match the
+provider's locked minor (currently 3.11) and supply `venv`, `ensurepip`, and
+headless Tcl via `tkinter.Tcl()`; no graphical display is needed. There is no
+fallback to another Python minor. Host Python/Tcl and Docker or Nix are separate
+host prerequisites. Docker images and Nix stores remain in their external storage,
+not under the selected root. The available local 3.12 tool environment lacks Tk
+and does not meet the requested 3.11 prerequisite; this slice has not repaired it
+or demonstrated actual provisioning. The current private provider installation
+also awaits an explicit refresh/activation of the latest provisioning changes.
+
+Root precedence is a later explicit `--toolchain PATH`, then nonempty `TOOLCHAIN`,
+then the absolute `_flow_tools/` directory beside `bootstrap.sh`. For example:
+
+```sh
+TOOLCHAIN="/storage/my flow tools" ./bootstrap.sh --check --no-container
+./bootstrap.sh --toolchain "../shared flow tools" --check --no-container
+```
+
+The wrapper keeps the caller's working directory; explicit relative roots (including
+`TOOLCHAIN`) retain that meaning. Only the default root is project-relative.
+`/_flow_tools/` is ignored here; ignoring any overridden location is its owner's
+policy. The provider puts `tt/`, `pdk/`, LibreLane's `.venv/`, and the precheck
+`.venv-precheck/` under the chosen root. `--check` changes nothing; `--offline` forbids fetching
+(it is not a read-only mode); `--no-container` skips container-image provisioning
+and checks, not TT/PDK/venv requirements. These and `--python` are forwarded without
+consumer-side per-tool logic.
+
+Project `describe` and `emit` below work independently of flow-tool provisioning.
+For subsequent shared-CLI operations, pass the chosen root explicitly:
+
+```sh
+hardcaml-asic-flow preflight /absolute/path/to/bundle --toolchain "$PWD/_flow_tools"
+hardcaml-asic-flow run /absolute/path/to/bundle --toolchain "$PWD/_flow_tools" \
+  --runs /absolute/path/to/runs --stage synthesis
+```
+
+Replace that root when using an override. Sourcing the provider-generated
+`_flow_tools/toolchain-env.sh` is optional; the wrapper exports nothing to the calling shell,
+and these commands do not rely on `TT` or `FLOW_PY`. LibreLane venv autoactivation
+is unnecessary: shared-CLI orchestration uses a separate host Python and selects
+the flow interpreters from `--toolchain`. Preflight/run are separate user actions,
+not bootstrap tests or evidence of physical EDA success.
+
+Recorder-only bootstrap tests (no provisioning, downloads or nested Dune):
+
+```sh
+python3 scripts/test_bootstrap.py
+dune runtest scripts --force
+```
 
 ### Consumer dependency setup
 

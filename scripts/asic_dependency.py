@@ -268,7 +268,8 @@ export {variable}
 def validate_install(generation, work, runner):
     package = generation / "lib/hardcaml_asic"
     for relative in ("META", "dune-package", "elaborated_project.mli", "resolved_flow.mli", "bundle.mli", "project.mli",
-                     "flow/hardcaml_asic_flow/cli.py", "flow/hardcaml_asic_flow/data/toolchain.lock",
+                     "flow/hardcaml_asic_flow/cli.py", "flow/hardcaml_asic_flow/probe.py",
+                     "flow/hardcaml_asic_flow/data/toolchain.lock",
                      "flow/hardcaml_asic_flow/data/toolchain.sh", "flow/hardcaml_asic_flow/data/version.txt"):
         if not (package / relative).is_file():
             raise Error(f"incomplete installation: {relative}")
