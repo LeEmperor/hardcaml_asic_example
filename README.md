@@ -5,7 +5,7 @@ Tiny Tapeout wrapper, an ASIC declaration, a standalone bundle emitter, repeatab
 bundle acceptance, and PDK-free Cyclesim and generated-Verilog tests. This is a
 **development specimen, not dependency-pinned**.
 It uses `core`, `hardcaml`, `ppx_jane`, `ppx_hardcaml`, `yojson`, and a selectable
-development build of `hardcaml_asic` exposing the hardened `Resolved_build.mli`.
+development build of `hardcaml_asic` exposing the hardened `Resolved_flow.mli`.
 The project declares Dune language 3.17 and has been built with Dune 3.24.2 and
 OCaml 5.2.0+ox. No opam package or invented pin is supplied. The installed
 Hardcaml interfaces under `~/.opam/5.2.0+ox/lib/hardcaml/` are the API authority.
@@ -84,6 +84,17 @@ for the synthetic fixture. These commands use existing tools, without installing
 dependencies. Both acceptance aliases consume Dune executable dependencies
 directly and never invoke nested Dune builds.
 
+### Source-breaking ASIC API migration
+
+The public API now uses `Elaborated_project` (formerly `Build`) and
+`Resolved_flow` (formerly `Resolved_build`). The resolved record field is
+`.elaborated_project` (formerly `.build`), and `Bundle.render` accepts
+`?simulation_project` (formerly `?simulation_build`). There are no compatibility
+aliases: consumers must update source and recompile against the renamed provider.
+This example uses the new names for both Implementation and Simulation elaboration.
+The rename preserves persisted bundle keys, ordering and hashing; it does not
+provide binary compatibility or pin the development dependency.
+
 The ordinary core test executable accepts either `--directed` or **both** `--seed INT`
 and `--cycles NONNEGATIVE_INT`; there are no implicit random defaults.
 `dune runtest` runs the directed suite and seed 20261012 with 20,000 traffic edges.
@@ -147,8 +158,8 @@ reset-while-disabled priority, overflow, underflow and pointer-wrap checks.
 `asic_test/resolution_test.ml` uses public `Project.elaborate_for_flow` and a
 separate `Project.elaborate ~mode:Simulation`. It checks exact top/ports, target,
 clock, all I/O delay ranges, template setting values/reasons, generated settings,
-24 pin descriptions, and empty resource inventories in both builds. It also
-checks that a Simulation build is rejected by the implementation resolution
+24 pin descriptions, and empty resource inventories in both elaborated projects. It also
+checks that a Simulation elaborated project is rejected by the implementation resolution
 boundary. These tests read no PDK files and render no bundles.
 
 ## TT wrapper and pin map
@@ -217,7 +228,8 @@ sources. The explicit root allows fixture-based acceptance to supply a
 synthetic committed source checkout without altering the actual project checkout.
 
 The emitter declares the project, resolves Implementation through the public
-hardened boundary, elaborates Simulation separately, then calls `Bundle.render`
+hardened `Resolved_flow` boundary, elaborates Simulation separately, then calls `Bundle.render`
+with `~simulation_project`
 and `Bundle.write`. The library owns RTL/config/SDC/metadata/manifest emission and
 provenance. Success prints one JSON line:
 
@@ -228,9 +240,11 @@ provenance. Success prints one JSON line:
 Failures print the library diagnostic plus source-provenance guidance to stderr
 and exit 1; missing CLI arguments exit 2. Bundle output must be new or empty;
 existing files are not overwritten. A write failure may leave partial output.
-Rendering requires a source checkout with at least one commit. **This project's
-current no-initial-commit root cannot emit a normal bundle.** The emitter does
-not create a commit or fabricate a revision to bypass that requirement.
+Rendering requires a source checkout with at least one commit. The owner has made
+the initial commit; the audit observed `main` at
+`8e4577f6c72cc689cbc92daeb5f8ae083cf970e0`. That ref alone establishes neither a
+clean working tree nor a dependency pin. The emitter does not create a commit or
+fabricate a revision to bypass the provenance requirement.
 
 The explicit `Declaration.source_inputs` inventory is:
 
@@ -265,6 +279,25 @@ environment and per-command configuration, then verifies the recorded identities
 message, and absence of remotes. Inherited Git selectors are removed; system and
 shared user configuration are excluded, and signing/hooks are controlled by
 temporary test-local configuration. The fixture is removed after the test.
+
+For before/after API compatibility, optionally supply a saved pre-migration
+executable (kept outside the source tree) after verifying its trusted hash:
+
+```sh
+OCAMLPATH="$ASIC_LIBDIR${OCAMLPATH:+:$OCAMLPATH}" python3 acceptance/check_bundle.py \
+  --emitter _build/default/bin/emit_bundle.exe \
+  --exporter _build/default/acceptance/export_trace.exe \
+  --source-root . --bench acceptance/replay.v --require-rtl \
+  --baseline-emitter /absolute/path/to/saved-pre-migration.exe
+```
+
+Both executables read the same synthetic fixture, with identical source bytes,
+paths, revision and status. The script checks byte equality for synthesis RTL,
+simulation RTL, config, SDC and info, then the entire bundle including the manifest
+and copied inputs. It prints artifact and executable hashes and bundle identity.
+This isolates executable behavior from source-provenance changes; old and modified
+source snapshots naturally have different input hashes and may have different
+manifests. Ordinary and strict aliases need no baseline executable.
 
 Bundle checks cover:
 
@@ -317,7 +350,7 @@ formal proof. Bench delays allow combinational settling and do not model board
 setup/hold or metastability; the 48 MHz and I/O constraints are analysis assumptions.
 No synthesis, physical EDA, PDK validation, area, timing closure or DRC acceptance
 has been run. Synthetic fixture revisions establish test provenance only, not a
-release revision for this consumer. The real checkout still needs a user-created
-initial commit before normal emission, and a committed dependency pin/lock remains
+release revision for this consumer. The owner's initial commit satisfies the
+commit prerequisite for normal emission; a committed dependency pin/lock remains
 absent. Acceptance selects a local development provider explicitly; it does not
 establish reproducibility across unpinned provider/toolchain revisions.

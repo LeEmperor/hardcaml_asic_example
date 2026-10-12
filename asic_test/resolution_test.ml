@@ -8,9 +8,9 @@ let near a b = Float.(abs (a -. b) < 1e-6)
 let () =
   let project = Fifo_asic.Declaration.create () |> Or_error.ok_exn in
   let r = Project.elaborate_for_flow project |> Or_error.ok_exn in
-  let simulation = Project.elaborate project ~mode:Simulation |> Or_error.ok_exn in
-  let check_build build =
-    let circuit = Build.circuit build in
+  let simulation_project = Project.elaborate project ~mode:Simulation |> Or_error.ok_exn in
+  let check_elaborated_project elaborated_project =
+    let circuit = Elaborated_project.circuit elaborated_project in
     require "exact top" (String.equal (Circuit.name circuit) "tt_um_controlled_fifo");
     let ports signals =
       List.map signals ~f:(fun s -> List.hd_exn (Signal.names s), Signal.width s)
@@ -26,19 +26,19 @@ let () =
     check_ports "exact output ports" (Circuit.outputs circuit)
       [ "uo_out", 8; "uio_out", 8; "uio_oe", 8 ];
     require "ordinary FIFO registers are not registered RAM resources"
-      (List.is_empty (Build.resources build));
-    require "one clock" (List.length (Build.clocks build) = 1);
-    require "hardening" (Flow.Operation.equal (Build.flow build).operation Hardening);
-    let pins = Build.pinout build in
+      (List.is_empty (Elaborated_project.resources elaborated_project));
+    require "one clock" (List.length (Elaborated_project.clocks elaborated_project) = 1);
+    require "hardening" (Flow.Operation.equal (Elaborated_project.flow elaborated_project).operation Hardening);
+    let pins = Elaborated_project.pinout elaborated_project in
     Pinout.validate_tiny_tapeout pins |> Or_error.ok_exn;
     require "all 24 pin descriptions" (List.length pins = 24)
   in
-  check_build r.build;
-  check_build simulation;
-  require "implementation mode" (match Build.mode r.build with Implementation -> true | _ -> false);
-  require "separate simulation mode" (match Build.mode simulation with Simulation -> true | _ -> false);
+  check_elaborated_project r.elaborated_project;
+  check_elaborated_project simulation_project;
+  require "implementation mode" (match Elaborated_project.mode r.elaborated_project with Implementation -> true | _ -> false);
+  require "separate simulation mode" (match Elaborated_project.mode simulation_project with Simulation -> true | _ -> false);
   require "simulation cannot cross implementation resolution boundary"
-    (Or_error.is_error (Resolved_build.resolve simulation));
+    (Or_error.is_error (Resolved_flow.resolve simulation_project));
   require "TT6x4" (String.equal r.target.tiles "6x4");
   require "IHP CMOS5L" (String.equal r.target.technology_name "ihp-sg13cmos5l");
   require "clk at 48MHz"
@@ -47,7 +47,7 @@ let () =
   let check_delays delays ports maximum =
     require "exact constrained ports"
       ([%equal: string list]
-         (List.map delays ~f:(fun (d : Resolved_build.Delay_ns.t) -> d.port)) ports);
+          (List.map delays ~f:(fun (d : Resolved_flow.Delay_ns.t) -> d.port)) ports);
     List.iter delays ~f:(fun d ->
       require ("delay bounds: " ^ d.port) (near d.minimum 0. && near d.maximum maximum))
   in

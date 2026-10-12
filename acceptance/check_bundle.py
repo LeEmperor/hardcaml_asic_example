@@ -92,8 +92,11 @@ def main():
     for name in ["emitter", "exporter", "source-root", "bench"]:
         parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--require-rtl", action="store_true")
+    parser.add_argument("--baseline-emitter", type=Path,
+                        help="Saved pre-migration executable to compare on the identical source fixture")
     args = parser.parse_args()
     emitter, exporter, source_root, bench = [p.resolve() for p in (args.emitter, args.exporter, args.source_root, args.bench)]
+    baseline_emitter = args.baseline_emitter.resolve() if args.baseline_emitter else None
     with tempfile.TemporaryDirectory(prefix="fifo-acceptance-") as tmp:
         tmp = Path(tmp)
         # Remove inherited repository/config/identity selectors. No shared config is read
@@ -121,9 +124,9 @@ def main():
             return run(["git", "-C", source, "-c", "user.name=Bundle test", "-c", "user.email=bundle@test.invalid",
                         "-c", "commit.gpgSign=false", "-c", "core.hooksPath=" + str(tmp / "hooks"), *argv], env).stdout.strip()
 
-        def emit(name, ok=True):
+        def emit(name, ok=True, executable=emitter):
             output = tmp / name
-            result = run([emitter, "--source-root", source, "--output-dir", output], env, ok=ok)
+            result = run([executable, "--source-root", source, "--output-dir", output], env, ok=ok)
             return output, json.loads(result.stdout) if ok else result
 
         git("init", "--template=" + str(tmp / "template"))
@@ -150,6 +153,21 @@ def main():
         inspect(second, response2, source, inputs)
         require(tree(first) == tree(second), "repeat emission byte equality")
         saved = tree(first)
+        if baseline_emitter is not None:
+            baseline, baseline_response = emit("baseline", executable=baseline_emitter)
+            baseline_m = inspect(baseline, baseline_response, source, inputs)
+            baseline_files = tree(baseline)
+            artifacts = ["src/tt_um_controlled_fifo.v", "simulation/tt_um_controlled_fifo.v",
+                         "src/config.json", "constraints/top.sdc", "info.yaml"]
+            for path in artifacts:
+                require(baseline_files[path] == saved[path], "baseline artifact byte equality: " + path)
+                print(f"PASS baseline artifact {path}: bytes={len(saved[path])} sha256={digest(saved[path])}")
+            require(baseline_files == saved, "baseline whole-bundle byte equality")
+            require(baseline_m == m, "baseline manifest equality")
+            print(f"PASS baseline whole-bundle equality: {len(saved)} files; identical fixture source bytes/paths, "
+                  f"revision={m['source_revision']}, clean status; identity={m['identity']}")
+            print(f"PASS baseline emitter sha256={digest(baseline_emitter.read_bytes())}; "
+                  f"current emitter sha256={digest(emitter.read_bytes())}")
         _, failure = emit("first", ok=False)
         require("not empty" in failure.stderr and tree(first) == saved, "nonempty refusal preserves bundle")
         for index, (path, comment) in enumerate([("README.md", b"\n<!-- fixture comment -->\n"),

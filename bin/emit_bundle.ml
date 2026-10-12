@@ -5,10 +5,10 @@ let emit ~source_root ~output_dir =
   let open Or_error.Let_syntax in
   let%bind project = Fifo_asic.Declaration.create () in
   let%bind resolved = Project.elaborate_for_flow project in
-  let%bind simulation_build = Project.elaborate project ~mode:Simulation in
+  let%bind simulation_project = Project.elaborate project ~mode:Simulation in
   let%bind bundle =
     Bundle.render
-      ~simulation_build
+      ~simulation_project
       ~source_root
       ~input_paths:Fifo_asic.Declaration.source_inputs
       resolved
