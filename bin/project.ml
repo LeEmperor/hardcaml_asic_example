@@ -18,15 +18,38 @@ let is_file path = try match (U.stat path).st_kind with U.S_REG -> true | _ -> f
 let generated path = List.exists (String.split path ~on:'/') ~f:(fun p ->
   List.mem [ "_build"; "_flow_results"; ".dev" ] p ~equal:String.equal)
 
-let check_provider provider =
+let check_provider provider ~endpoint =
   let channel = U.open_process_args_in provider [|provider; "--version"; "--json"|] in
   let metadata = Exn.protect ~f:(fun () -> Yojson.Safe.from_channel channel)
     ~finally:(fun () -> match U.close_process_in channel with
-       | U.WEXITED 0 -> () | _ -> failwith "Provider --version --json failed; CLI contract 2 or 3 is required") in
+       | U.WEXITED 0 -> () | _ -> failwith "Provider --version --json failed; CLI contract 2, 3 or 4 is required") in
   let open Yojson.Safe.Util in
    match metadata |> member "cli_contract" |> member "version" with
-   | `Int (2 | 3) -> ()
-   | _ -> failwith "Installed hardcaml-asic-flow requires supported CLI contract 2 or 3; install/activate a compatible provider"
+   | `Int 4 -> ()
+   | `Int (2 | 3) when not endpoint -> ()
+   | `Int (2 | 3) -> failwith "--endpoint requires CLI contract 4; refresh/activate a compatible provider"
+   | _ -> failwith "Installed hardcaml-asic-flow requires supported CLI contract 2, 3 or 4; install/activate a compatible provider"
+;;
+
+let rec mkdir_p path =
+  try U.mkdir path 0o755 with
+  | U.Unix_error (U.EEXIST, _, _) ->
+    if not (match (U.stat path).st_kind with U.S_DIR -> true | _ -> false)
+    then bad ("Results parent is not a directory: " ^ path)
+  | U.Unix_error (U.ENOENT, _, _) -> mkdir_p (Filename.dirname path); mkdir_p path
+;;
+
+let new_workspace results endpoint =
+  mkdir_p results;
+  let rec choose () =
+    let name = Printf.sprintf "%s-%d-%08x%08x%08x%08x" endpoint (U.getpid ())
+      (Stdlib.Random.bits ()) (Stdlib.Random.bits ()) (Stdlib.Random.bits ()) (Stdlib.Random.bits ()) in
+    let path = Filename.concat results name in
+    match U.lstat path with
+    | _ -> choose ()
+    | exception U.Unix_error (U.ENOENT, _, _) -> path
+  in
+  choose ()
 ;;
 
 let discover () =
@@ -45,6 +68,7 @@ let main command args =
   let json = ref false and verbose = ref false and native = ref false in
   let source = ref None and root = ref None and results = ref None and output = ref None in
   let bundle = ref None and tools = ref None and stage = ref None and runs = ref None in
+  let endpoint = ref None in
   let python = ref None and support = ref None and pdk = ref None in
   let opt name dest help = name, Stdlib.Arg.String (fun s ->
     if String.is_empty s || String.is_prefix s ~prefix:"--" then bad (name ^ " requires a nonempty path");
@@ -63,12 +87,18 @@ let main command args =
     | "preflight" -> common @ roots @ routing @ [opt "--output" output "Exact report file"]
     | "run" -> common @ roots @ routing @
       [ "--stage", Stdlib.Arg.String (fun s -> stage := Some s), "synthesis|full Required implementation stage";
-        opt "--runs" runs "Run store override" ]
+         "--endpoint", Stdlib.Arg.String (fun s -> endpoint := Some s), "synthesis|floorplan|placement|cts|routing|signoff Explicit-stage endpoint (contract 4)";
+         opt "--runs" runs "Classic run store override" ]
     | _ -> bad "Unknown command" in
   Stdlib.Arg.parse_argv ~current:(ref 0) (Array.of_list (("project " ^ command) :: args))
     options (fun arg -> bad ("Unexpected argument: " ^ arg)) usage;
   if String.equal command "run" then
-    (match !stage with Some ("synthesis" | "full") -> () | _ -> bad "run requires --stage synthesis|full");
+     (match !stage, !endpoint with
+      | Some _, Some _ -> bad "--stage and --endpoint are mutually exclusive"
+      | None, Some ("synthesis" | "floorplan" | "placement" | "cts" | "routing" | "signoff") ->
+        if !native || Option.is_some !runs then bad "--endpoint does not support Classic-only --native or --runs"
+      | Some ("synthesis" | "full"), None -> ()
+      | _ -> bad "run requires --stage synthesis|full or --endpoint synthesis|floorplan|placement|cts|routing|signoff");
   let explicit = match !root, !source with
     | Some a, Some b when not (String.equal (U.realpath (absolute a)) (U.realpath (absolute b))) -> bad "Conflicting --project-root and --source-root"
     | Some a, _ | _, Some a -> Some (absolute a) | _ -> None in
@@ -87,8 +117,8 @@ let main command args =
       match List.find_map paths ~f:(fun dir ->
         let path = anchor_executable (Filename.concat (if String.is_empty dir then "." else dir) "hardcaml-asic-flow") in
         try U.access path [U.X_OK]; if is_file path then Some path else None with _ -> None) with
-      | Some path -> check_provider path; Some path
-       | None -> failwith "hardcaml-asic-flow is not on PATH; install/activate a compatible provider (CLI contract 2 or 3).") else None in
+       | Some path -> check_provider path ~endpoint:(Option.is_some !endpoint); Some path
+        | None -> failwith "hardcaml-asic-flow is not on PATH; install/activate a compatible provider (CLI contract 2, 3 or 4).") else None in
     let emit () =
       if Option.is_none explicit then List.iter (Project.source_inputs project) ~f:(fun input ->
         let path = Filename.concat root input in
@@ -113,9 +143,20 @@ let main command args =
       let dir = match !bundle with Some path -> absolute path | None -> let _, dir, _ = emit () in dir in
       let toolchain = Option.first_some !tools (Sys.getenv "TOOLCHAIN" |> Option.filter ~f:(fun s -> not (String.is_empty s)))
         |> Option.value_map ~default:(Filename.concat root "_flow_tools") ~f:absolute in
-      let argv = [command; dir; "--results-root"; results; "--toolchain"; toolchain] in
-      let argv = List.fold ["--python", !python; "--support-tools", !support; "--pdk-root", !pdk;
-        "--output", !output; "--runs", !runs] ~init:argv ~f:(fun a (flag, v) ->
+       let argv = match !endpoint with
+         | None -> [command; dir; "--results-root"; results; "--toolchain"; toolchain]
+         | Some endpoint ->
+           let workspace = new_workspace results endpoint in
+           let resolved override suffix = Option.value_map override
+             ~default:(Filename.concat toolchain suffix) ~f:absolute in
+           ["stages"; dir; "--endpoint"; endpoint; "--workspace"; workspace;
+            "--checkpoint-store"; Filename.concat workspace "checkpoints";
+            "--support-tools"; resolved !support "tt"; "--pdk-root"; resolved !pdk "pdk";
+            "--python"; Option.value_map !python ~default:(Filename.concat toolchain ".venv/bin/python") ~f:anchor_executable] in
+       let overrides = if Option.is_some !endpoint then [] else
+         ["--python", !python; "--support-tools", !support; "--pdk-root", !pdk;
+          "--output", !output; "--runs", !runs] in
+       let argv = List.fold overrides ~init:argv ~f:(fun a (flag, v) ->
            match v with None -> a | Some p ->
              let path = if String.equal flag "--python" then anchor_executable p else absolute p in
              a @ [flag; path]) in
@@ -123,11 +164,12 @@ let main command args =
         @ (if !native then ["--native"] else []) @ (if !json then ["--json"] else [])
         @ (if !verbose then ["--verbose"] else []) in
       let provider = Option.value_exn provider in
-       if !verbose then eprintf "Dispatching installed provider %s (supports CLI contract 2 or 3)\n%!" provider;
+        if !verbose then eprintf "Dispatching installed provider %s (supports CLI contract 2, 3 or 4)\n%!" provider;
       U.execv provider (Array.of_list (provider :: argv))))
 ;;
 
 let () =
+   Stdlib.Random.self_init ();
   try match Sys.get_argv () |> Array.to_list with
     | [_; ("--help" | "-help")] -> printf "%s\n%!" usage
     | _ :: command :: args -> main command args
@@ -135,4 +177,4 @@ let () =
   with
   | Stdlib.Arg.Bad message -> eprintf "%s\n%!" message; Stdlib.exit 2
   | Stdlib.Arg.Help message -> printf "%s%!" message
-   | exn -> eprintf "project failed: %s\nUse a committed source checkout with the declared inputs and a compatible installed provider (CLI contract 2 or 3).\n%!" (Exn.to_string exn); Stdlib.exit 1
+    | exn -> eprintf "project failed: %s\nUse a committed source checkout with the declared inputs and a compatible installed provider (CLI contract 2, 3 or 4).\n%!" (Exn.to_string exn); Stdlib.exit 1

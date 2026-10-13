@@ -54,7 +54,14 @@ if '--version' in sys.argv:
 else:
     with open(os.environ['RECORD'], 'a') as f:
         f.write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'executable': sys.argv[0]}) + '\\n')
-    print(json.dumps({'recorded': True}) if '--json' in sys.argv else 'Recorded implementation dispatch')
+    if '--workspace' in sys.argv:
+        workspace = sys.argv[sys.argv.index('--workspace') + 1]
+        assert not os.path.lexists(workspace), 'consumer precreated workspace'
+    if sys.argv[1] == 'stages' and '--json' in sys.argv:
+        print(json.dumps({'event': 'observation_allocated', 'recorded': True}), flush=True)
+        print(json.dumps({'execution': 'complete', 'recorded': True}), flush=True)
+    else:
+        print(json.dumps({'recorded': True}) if '--json' in sys.argv else 'Recorded implementation dispatch')
     if '--verbose' in sys.argv: print('provider diagnostic', file=sys.stderr)
     if os.environ.get('PROVIDER_SIGNAL'): os.kill(os.getpid(), int(os.environ['PROVIDER_SIGNAL']))
     sys.exit(int(os.environ.get('PROVIDER_EXIT', '0')))
@@ -155,7 +162,7 @@ else:
         self.assertFalse(self.log.exists())
 
     def test_supported_contracts_preserve_human_json_routing(self):
-        for version in ('2', '3'):
+        for version in ('2', '3', '4'):
             for flags in ([], ['--json']):
                 with self.subTest(version=version, flags=flags):
                     result = self.invoke('preflight', '--bundle', 'unused', *flags,
@@ -168,12 +175,70 @@ else:
         self.assertFalse((self.root / '_flow_results').exists())
 
     def test_unknown_or_malformed_contract_refused_before_emission(self):
-        for version in ('4', 'null', '"3"', 'true', '3.0'):
+        for version in ('5', 'null', '"4"', 'true', '4.0'):
             with self.subTest(version=version):
                 result = self.invoke('preflight', env=dict(self.env, CONTRACT=version), status=1)
-                self.assertIn('CLI contract 2 or 3', result.stderr)
+                self.assertIn('CLI contract 2, 3 or 4', result.stderr)
                 self.assertFalse((self.root / '_flow_results').exists())
                 self.assertFalse(self.log.exists())
+
+    def test_endpoint_errors_before_emission(self):
+        for args in [('--stage', 'full'), ('--native',), ('--runs', 'runs'),
+                     ('--plan', 'recipe'), ('--checkpoint', 'checkpoint'), ('--endpoint', 'invalid')]:
+            self.invoke('run', '--endpoint', 'synthesis', *args, status=2,
+                        env=dict(self.env, CONTRACT='4'))
+        for version in ('2', '3', '5', '"4"', 'true', '4.0'):
+            self.invoke('run', '--endpoint', 'synthesis', status=1,
+                        env=dict(self.env, CONTRACT=version))
+        self.assertFalse((self.root / '_flow_results').exists())
+        self.assertFalse(self.log.exists())
+
+    def test_endpoint_dispatch_uniqueness_and_complete_output(self):
+        env = dict(self.env, CONTRACT='4', TOOLCHAIN='env tools')
+        workspaces = []
+        for endpoint in ('synthesis', 'floorplan', 'placement', 'cts', 'routing', 'signoff', 'synthesis'):
+            result = self.invoke('run', '--endpoint', endpoint, '--json', env=env)
+            self.assertEqual([json.loads(line) for line in result.stdout.splitlines()],
+                             [{'event': 'observation_allocated', 'recorded': True},
+                              {'execution': 'complete', 'recorded': True}])
+            argv = self.call()['argv']
+            value = lambda flag: argv[argv.index(flag) + 1]
+            workspace = Path(value('--workspace'))
+            workspaces.append(workspace)
+            self.assertEqual(argv[0], 'stages')
+            self.assertEqual(value('--endpoint'), endpoint)
+            self.assertEqual(workspace.parent, self.root / '_flow_results')
+            self.assertFalse(workspace.exists())
+            self.assertEqual(value('--checkpoint-store'), str(workspace / 'checkpoints'))
+            self.assertEqual(value('--support-tools'), str(self.nested / 'env tools/tt'))
+            self.assertEqual(value('--pdk-root'), str(self.nested / 'env tools/pdk'))
+            self.assertEqual(value('--python'), str(self.nested / 'env tools/.venv/bin/python'))
+            self.assertNotIn('--observation-store', argv)
+            self.assertNotIn('--stage', argv)
+        self.assertEqual(len(set(workspaces)), 7)
+        self.assertIn('Recorded implementation dispatch', self.invoke(
+            'run', '--endpoint', 'synthesis', env=env).stdout)
+
+    def test_endpoint_explicit_bundle_spaces_overrides_and_exit(self):
+        env = dict(self.env, CONTRACT='4', PROVIDER_EXIT='37', TOOLCHAIN='ignored tools')
+        (self.root / 'bin/project.ml').unlink()  # would prevent emission
+        self.invoke('run', '--endpoint', 'floorplan', '--project-root', str(self.root),
+                    '--bundle', 'existing bundle', '--results-root', 'result store',
+                    '--toolchain', 'explicit tools', '--support-tools', 'support tools',
+                    '--pdk-root', 'pdk root', '--python', 'venv python', '--json', '--verbose',
+                    cwd=self.outside, env=env, status=37)
+        argv = self.call()['argv']
+        value = lambda flag: argv[argv.index(flag) + 1]
+        self.assertEqual(argv[1], str(self.outside / 'existing bundle'))
+        self.assertEqual(Path(value('--workspace')).parent, self.outside / 'result store')
+        for flag, suffix in [('--support-tools', 'support tools'), ('--pdk-root', 'pdk root'),
+                             ('--python', 'venv python')]:
+            self.assertEqual(value(flag), str(self.outside / suffix))
+        self.assertFalse((self.outside / 'result store/bundles').exists())
+        self.assertFalse((self.root / '_flow_results').exists())
+        self.assertIn('--verbose', argv)
+        self.invoke('run', '--endpoint', 'synthesis', '--bundle', 'unused', env=dict(
+            self.env, CONTRACT='4', PROVIDER_SIGNAL=str(signal.SIGTERM)), status=-signal.SIGTERM)
 
     def test_directory_paths_preserve_symlink_parent_traversal(self):
         child = self.root / 'child'

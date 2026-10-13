@@ -322,8 +322,8 @@ def validate_install(generation, work, runner):
     runner([str(generation / "bin/hardcaml-asic-flow"), "--help"], env=env)
     metadata = json.loads(runner([str(generation / "bin/hardcaml-asic-flow"), "--version", "--json"], env=env))
     version = metadata.get("cli_contract", {}).get("version")
-    if type(version) is not int or version not in (2, 3):
-        raise Error("installed provider requires supported CLI contract 2 or 3")
+    if type(version) is not int or version not in (2, 3, 4):
+        raise Error("installed provider requires supported CLI contract 2, 3 or 4")
 
 
 def refresh(source, mode, store, record, runner=run, remove_source_build_override=False):

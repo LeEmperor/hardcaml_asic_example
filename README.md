@@ -7,9 +7,10 @@ bundle acceptance, and PDK-free Cyclesim and generated-Verilog tests. This is a
 It uses `core`, `hardcaml`, `ppx_jane`, `ppx_hardcaml`, `yojson`, and a selectable
 development build of `hardcaml_asic` exposing the hardened `Resolved_flow.mli` and
 the shared `Project.source_inputs`, `describe`, `emit_bundle`, and
-`emit_bundle_to_store` API, `Bundle.publish`, and flow CLI contract **3**.
-Consumer setup/dispatch accepts exactly contracts **2 or 3**, rejecting unknown
-versions. Contract 2 closeouts below describe historical installations.
+`emit_bundle_to_store` API, `Bundle.publish`, and flow CLI contract **4**.
+Consumer setup/Classic dispatch accepts exactly integer contracts **2, 3 or 4**;
+the explicit-stage `--endpoint` route requires **4**. Unknown versions fail before
+bundle emission. Older closeouts below describe historical installations.
 The project declares Dune language 3.17 and has been built with Dune 3.24.2 and
 OCaml 5.2.0+ox. The record is not an opam pin. The installed
 Hardcaml interfaces under `~/.opam/5.2.0+ox/lib/hardcaml/` are the API authority.
@@ -62,6 +63,36 @@ clears valid and holds response data; disabled edges also hold the entire queue.
 Consecutive pops may keep it high. `full` and `empty` depend only on occupancy.
 
 ## Build and run
+
+### Explicit-stage run and independent progress reader
+
+After activating a contract-4 provider and using existing provisioned tools:
+
+```sh
+. .dev/asic/current/activate.sh
+dune exec -j 20 bin/project.exe -- run --endpoint synthesis --json
+# In another activated shell, use the early allocation receipt's attempt path:
+hardcaml-asic-flow observation watch "$ATTEMPT" --json
+# Save a complete updates envelope's stream_id/cursor, then reconnect:
+hardcaml-asic-flow observation watch "$ATTEMPT" --stream-id "$STREAM_ID" --after "$CURSOR" --json
+hardcaml-asic-flow observation inspect "$ATTEMPT" --json
+```
+
+`--endpoint synthesis|floorplan|placement|cts|routing|signoff` is mutually exclusive
+with Classic `--stage synthesis|full`. The consumer emits/reuses the bundle and
+execs installed provider `stages`; human output is default, and `--json` forwards
+the provider's flushed allocation/terminal JSONL unchanged. Results use
+`--results-root` or `SOURCE/_flow_results`; each invocation selects a unique,
+nonexistent workspace there with `checkpoints` inside. The provider creates the
+workspace and defaults the journal to results/`observations`, outside it.
+`--bundle` bypasses emission. Tool precedence remains explicit `--toolchain`,
+nonempty `TOOLCHAIN`, then `SOURCE/_flow_tools`, with per-tool overrides taking
+precedence; defaults are `tt`, `pdk`, `.venv/bin/python` under that root.
+`--native` and Classic-only `--runs` are rejected before emission for endpoints.
+Recipes, resume and acceptance are separate provider operations; this route does
+not finalize acceptance. Reader Ctrl-C stops only the reader; its exit 0 denotes
+a recorded terminal outcome, so inspect `outcome.exit_code` for execution success.
+See the [feature/evidence record](../hardcaml_asic/docs/development/flow-journal.md).
 
 Run from this repository using an already available compiler, Dune, ocamlfind and
 dependencies. First obtain and activate a compatible installed `hardcaml_asic`

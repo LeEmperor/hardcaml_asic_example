@@ -197,13 +197,13 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(self.snapshot.is_relative_to(self.store))
 
     def test_supported_cli_contracts_only_and_refusal_preserves_selection(self):
-        for version in (2, 3):
+        for version in (2, 3, 4):
             self.contract = version
             selected = self.refresh()
-        for version in (1, 4, None, "3", True, 3.0):
+        for version in (1, 5, None, "4", True, 4.0):
             with self.subTest(version=version):
                 self.contract = version
-                with self.assertRaisesRegex(dep.Error, "supported CLI contract 2 or 3"):
+                with self.assertRaisesRegex(dep.Error, "supported CLI contract 2, 3 or 4"):
                     self.refresh()
                 self.assertEqual((self.store / "current").resolve(), Path(selected["generation"]))
                 self.assertEqual(json.loads((self.store / "current/receipt.json").read_text()), selected)
