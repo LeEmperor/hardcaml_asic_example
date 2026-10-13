@@ -88,6 +88,11 @@ class SetupTests(unittest.TestCase):
             package = generation / "lib/hardcaml_asic"
             for name in ("META", "dune-package", "elaborated_project.mli", "resolved_flow.mli", "bundle.mli",
                          "flow/hardcaml_asic_flow/cli.py", "flow/hardcaml_asic_flow/probe.py",
+                         "flow/hardcaml_asic_flow/managed_python.py",
+                         "flow/hardcaml_asic_flow/runtime_contract.py",
+                         "flow/hardcaml_asic_flow/runtime_observation.py",
+                         "flow/hardcaml_asic_flow/execution_transport.py",
+                         "flow/hardcaml_asic_flow/data/managed-python.json",
                          "flow/hardcaml_asic_flow/data/toolchain.lock",
                          "flow/hardcaml_asic_flow/data/toolchain.sh", "flow/hardcaml_asic_flow/data/version.txt"):
                 target = package / name
@@ -109,6 +114,13 @@ class SetupTests(unittest.TestCase):
                 (package / "flow/hardcaml_asic_flow/data/toolchain.lock").unlink()
             if self.failure == "missing-probe":
                 (package / "flow/hardcaml_asic_flow/probe.py").unlink()
+            if self.failure == "missing-managed-module":
+                (package / "flow/hardcaml_asic_flow/managed_python.py").unlink()
+            if self.failure == "missing-managed-data":
+                (package / "flow/hardcaml_asic_flow/data/managed-python.json").unlink()
+            for module in ("runtime_contract", "runtime_observation", "execution_transport"):
+                if self.failure == "missing-" + module:
+                    (package / f"flow/hardcaml_asic_flow/{module}.py").unlink()
         elif stage == "query":
             if self.failure == "wrong-package":
                 return b"/shared/opam/lib/hardcaml_asic\n"
@@ -149,7 +161,7 @@ class SetupTests(unittest.TestCase):
 
     def test_failures_preserve_publication(self):
         first = self.refresh()
-        for stage in ("build", "install", "query", "ocamlc", "dune-probe", "capture-metadata", "cli", "missing-data", "missing-probe", "wrong-package", "old-api", "old-project-api", "external-link"):
+        for stage in ("build", "install", "query", "ocamlc", "dune-probe", "capture-metadata", "cli", "missing-data", "missing-probe", "missing-managed-module", "missing-managed-data", "missing-runtime_contract", "missing-runtime_observation", "missing-execution_transport", "wrong-package", "old-api", "old-project-api", "external-link"):
             with self.subTest(stage=stage):
                 self.failure = stage
                 with self.assertRaises(dep.Error):

@@ -103,20 +103,40 @@ the provider. `./bootstrap.sh --help` forwards to provider help safely. Running
 Once host prerequisites are available, authorize actual provisioning by running:
 
 ```sh
+./bootstrap.sh  # explicitly provisions missing managed runtime/collateral; uses network
+# Optional external base override:
 ./bootstrap.sh --python /absolute/path/to/python3.11
-# Or ./bootstrap.sh when the provider's locked base interpreter is already available.
 ```
 
-Provisioning `--python PATH` selects the **base interpreter for new virtual
-environments**, not a flow run's virtual-environment Python. It must match the
-provider's locked minor (currently 3.11) and supply `venv`, `ensurepip`, and
-headless Tcl via `tkinter.Tcl()`; no graphical display is needed. There is no
-fallback to another Python minor. Host Python/Tcl and Docker or Nix are separate
-host prerequisites. Docker images and Nix stores remain in their external storage,
-not under the selected root. The available local 3.12 tool environment lacks Tk
-and does not meet the requested 3.11 prerequisite; this slice has not repaired it
-or demonstrated actual provisioning. The current private provider installation
-also awaits an explicit refresh/activation of the latest provisioning changes.
+Normal provisioning uses the installed provider's pinned **managed Python/Tcl**
+base for new venvs, retained under `_flow_tools/python/`. Explicit `--python PATH`
+selects an **external base**, not a flow run's venv interpreter. It must match
+the locked minor (3.11) and supply `venv`, `ensurepip` and headless Tcl; an invalid
+override fails before mutators, without fallback. Existing mismatched venvs need
+explicit repair. The managed distribution needs no Python 3.11/Tcl system
+packages; the host CLI still needs Python >= 3.9. OS libraries/certificates,
+Docker images and Nix stores remain external.
+
+Initial support is Linux glibc x86_64 >= 2.17, with kernel/filesystem support for
+atomic no-replace `renameat2`; actual host acceptance used glibc 2.39/kernel 6.8.
+Pinned archive size/SHA-256 are checked before extraction/execution, with safe
+bounded extraction, staged/final probes and a final receipt. Retained generations
+are never replaced. This is archive integrity/readiness, not P6.5 attestation.
+See [pin, semantics and network-opt-in reproduction](../hardcaml_asic/docs/guides/consumer-installation.md#managed-python-integrity-and-initial-platform).
+
+The accepted current provider generation is `caa4d18002274defb5eebb15e35a9042`;
+re-source activation in your shell. Final 2026-10-12 `./bootstrap.sh --check`
+including container exits **0**. The earlier five-gap result is historical.
+Host flow Python remains **3.11**; the official LibreLane **3.1.0.dev3** image
+may use supported Python **3.10..3.14** (observed **3.13.13**, Requires-Python >=3.10).
+This needs **fresh bundle emission**, not editing an old bundle or a waiver.
+See [simple emission/preflight commands and runtime policy](../hardcaml_asic/docs/guides/flow.md#runtime-policy-and-launch-binding)
+and [current acceptance](../hardcaml_asic/docs/phase_plan.md#hostcontainer-runtime-policy-closeout).
+The recorded consumer pin is unchanged pending owner adoption. The acceptance
+bundle preserves its earlier dirty README snapshot; this documentation update
+does not change that stored input or identity. The historical observation probe
+ran zero of eleven cases; neither its rerun nor a real ASIC flow has run in this
+closeout. The old source 3.12 environment is unchanged.
 
 Root precedence is a later explicit `--toolchain PATH`, then nonempty `TOOLCHAIN`,
 then the absolute `_flow_tools/` directory beside `bootstrap.sh`. For example:
@@ -129,7 +149,7 @@ TOOLCHAIN="/storage/my flow tools" ./bootstrap.sh --check --no-container
 The wrapper keeps the caller's working directory; explicit relative roots (including
 `TOOLCHAIN`) retain that meaning. Only the default root is project-relative.
 `/_flow_tools/` is ignored here; ignoring any overridden location is its owner's
-policy. The provider puts `tt/`, `pdk/`, LibreLane's `.venv/`, and the precheck
+policy. The provider puts `python/`, `tt/`, `pdk/`, LibreLane's `.venv/`, and the precheck
 `.venv-precheck/` under the chosen root. `--check` changes nothing; `--offline` forbids fetching
 (it is not a read-only mode); `--no-container` skips container-image provisioning
 and checks, not TT/PDK/venv requirements. These and `--python` are forwarded without
@@ -592,7 +612,9 @@ were equal; inventories differ (13 old inputs, 15 new), so this is not old/new
 whole-bundle equality. Both RTL source sets also passed strict replay and negative
 oracles. Real-checkout evidence uses the command and preserved directory above;
 its `evidence.json` records actual dirty/untracked status rather than a clean-tree claim.
-This README is a declared input and must be finalized before capturing that evidence.
+This README is a declared input: later documentation edits legitimately change
+future bundle identity. The preserved slice 3 bundles and copied README describe
+their historical snapshot, not today's source bytes; they are not rewritten.
 
 The selected installed CLI's `hardcaml-asic-flow --version --json` reports package `0.1.0`,
 `source.stamped=false`, state `unknown`, and null revision, inventory digest and
