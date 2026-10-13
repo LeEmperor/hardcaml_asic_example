@@ -2,6 +2,7 @@
 import fcntl
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -68,6 +69,7 @@ class SetupTests(unittest.TestCase):
                            revision=fixture_git("rev-parse", "HEAD").decode().strip())
         self.failure = None
         self.mutate = False
+        self.contract = 2
 
     def runner(self, argv, *, cwd=None, env=None):
         self.calls.append(argv)
@@ -142,7 +144,7 @@ class SetupTests(unittest.TestCase):
                           "Project.emit_bundle_to_store", "Bundle.publish", "p.directory", "p.reused"):
                 self.assertIn(token, dep.PROBE)
         if "--version" in argv:
-            return json.dumps({"cli_contract": {"version": 1 if self.failure == "old-cli" else 2}}).encode()
+            return json.dumps({"cli_contract": {"version": 1 if self.failure == "old-cli" else self.contract}}).encode()
         return b""
 
     def refresh(self, mode="recorded"):
@@ -189,7 +191,22 @@ class SetupTests(unittest.TestCase):
         install = next(c for c in self.calls if c[:2] == ["dune", "install"])
         self.assertEqual(install[install.index("--build-dir") + 1], "_build")
         self.assertTrue(any("probe.exe" in c for c in self.calls))
+        for command in self.calls:
+            if command[0] == "dune":
+                self.assertEqual(command[command.index("-j") + 1], "20")
         self.assertTrue(self.snapshot.is_relative_to(self.store))
+
+    def test_supported_cli_contracts_only_and_refusal_preserves_selection(self):
+        for version in (2, 3):
+            self.contract = version
+            selected = self.refresh()
+        for version in (1, 4, None, "3", True, 3.0):
+            with self.subTest(version=version):
+                self.contract = version
+                with self.assertRaisesRegex(dep.Error, "supported CLI contract 2 or 3"):
+                    self.refresh()
+                self.assertEqual((self.store / "current").resolve(), Path(selected["generation"]))
+                self.assertEqual(json.loads((self.store / "current/receipt.json").read_text()), selected)
 
     def test_missing_revision_api_and_wrong_source(self):
         first = self.refresh()
@@ -293,6 +310,8 @@ class SetupTests(unittest.TestCase):
             self.assertTrue(status["active_is_older"])
             self.assertFalse(status["active_is_published"])
             self.assertTrue(status["active_library_path_is_first"])
+            self.assertIn("not activated first in this shell", status["diagnostic"])
+            self.assertIn(shlex.quote(str(self.store / "current/activate.sh")), status["diagnostic"])
         self.assertEqual(status["published_generation"], second["generation"])
 
     def test_explicit_manual_override_removal_is_recorded_and_carried_forward(self):

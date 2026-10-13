@@ -318,11 +318,12 @@ def validate_install(generation, work, runner):
     (consumer / "dune-project").write_text("(lang dune 3.17)\n")
     (consumer / "dune").write_text("(executable (name probe) (libraries hardcaml_asic))\n")
     (consumer / "probe.ml").write_text(PROBE)
-    runner(["dune", "build", "--root", str(consumer), "probe.exe"], cwd=consumer, env=env)
+    runner(["dune", "build", "-j", "20", "--root", str(consumer), "probe.exe"], cwd=consumer, env=env)
     runner([str(generation / "bin/hardcaml-asic-flow"), "--help"], env=env)
     metadata = json.loads(runner([str(generation / "bin/hardcaml-asic-flow"), "--version", "--json"], env=env))
-    if metadata.get("cli_contract", {}).get("version") != 2:
-        raise Error("installed provider requires CLI contract 2")
+    version = metadata.get("cli_contract", {}).get("version")
+    if type(version) is not int or version not in (2, 3):
+        raise Error("installed provider requires supported CLI contract 2 or 3")
 
 
 def refresh(source, mode, store, record, runner=run, remove_source_build_override=False):
@@ -351,9 +352,9 @@ def refresh(source, mode, store, record, runner=run, remove_source_build_overrid
             snapshot.mkdir()
             materialize(entries, snapshot)
             # -p implies --root .; cwd is the captured source, not the checkout.
-            runner(["dune", "build", "--build-dir", "_build",
+            runner(["dune", "build", "-j", "20", "--build-dir", "_build",
                     "-p", "hardcaml_asic", "@install"], cwd=snapshot)
-            runner(["dune", "install", "--root", str(snapshot), "--prefix", str(generation),
+            runner(["dune", "install", "-j", "20", "--root", str(snapshot), "--prefix", str(generation),
                     "--build-dir", "_build", "--libdir", str(generation / "lib"),
                     "hardcaml_asic"], cwd=snapshot)
             validate_install(generation, work, runner)
@@ -411,6 +412,10 @@ def status(store, record):
     result["active_is_published"] = bool(active and active == result["published_generation"])
     result["active_is_older"] = bool(active and active != result["published_generation"])
     result["active_library_path_is_first"] = bool(active and os.environ.get("OCAMLPATH", "").split(":")[0] == active + "/lib")
+    if result["published_generation"] and not (result["active_is_published"] and result["active_library_path_is_first"]):
+        result["diagnostic"] = ("Published provider is not activated first in this shell; run: . "
+                                + shlex.quote(str(store / "current/activate.sh"))
+                                + "; then ocamlfind query hardcaml_asic. Refresh alone cannot activate the calling shell.")
     return result
 
 

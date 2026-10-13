@@ -7,7 +7,9 @@ bundle acceptance, and PDK-free Cyclesim and generated-Verilog tests. This is a
 It uses `core`, `hardcaml`, `ppx_jane`, `ppx_hardcaml`, `yojson`, and a selectable
 development build of `hardcaml_asic` exposing the hardened `Resolved_flow.mli` and
 the shared `Project.source_inputs`, `describe`, `emit_bundle`, and
-`emit_bundle_to_store` API, `Bundle.publish`, and flow CLI contract **2**.
+`emit_bundle_to_store` API, `Bundle.publish`, and flow CLI contract **3**.
+Consumer setup/dispatch accepts exactly contracts **2 or 3**, rejecting unknown
+versions. Contract 2 closeouts below describe historical installations.
 The project declares Dune language 3.17 and has been built with Dune 3.24.2 and
 OCaml 5.2.0+ox. The record is not an opam pin. The installed
 Hardcaml interfaces under `~/.opam/5.2.0+ox/lib/hardcaml/` are the API authority.
@@ -70,17 +72,22 @@ package may currently expose an older API; for this development transition,
 explicitly refresh a private installation from a selected checkout and activate it
 before ordinary builds:
 
+Refresh cannot activate the calling shell. Source the activation file in the
+shell that will run Dune, and re-source after each refresh or opam environment
+reset. For the observed stale `0.1.0` switch installation and exact recovery
+commands, see [dependency commands](docs/dependency_commands.md).
+
 ```sh
 python3 scripts/asic_dependency.py refresh --source /absolute/path/to/hardcaml_asic --mode development
 . .dev/asic/current/activate.sh
 python3 scripts/asic_dependency.py status --json
-dune build @all
-dune runtest --force
-dune build @acceptance-strict --force
-dune exec test/fifo_test.exe -- --directed
-dune exec test/fifo_test.exe -- --seed 42 --cycles 100000
-dune exec asic_test/wrapper_test.exe
-dune exec asic_test/resolution_test.exe
+dune build @all -j 20
+dune runtest . -j 20
+dune build @acceptance-strict --force -j 20
+dune exec -j 20 test/fifo_test.exe -- --directed
+dune exec -j 20 test/fifo_test.exe -- --seed 42 --cycles 100000
+dune exec -j 20 asic_test/wrapper_test.exe
+dune exec -j 20 asic_test/resolution_test.exe
 ```
 
 `db` can replace the plain build command if that local wrapper preserves the
@@ -125,7 +132,7 @@ bounded extraction, staged/final probes and a final receipt. Retained generation
 are never replaced. This is archive integrity/readiness, not P6.5 attestation.
 See [pin, semantics and network-opt-in reproduction](../hardcaml_asic/docs/guides/consumer-installation.md#managed-python-integrity-and-initial-platform).
 
-The latest accepted provider generation is `f74ce0f369fd41b5b99811e0769dc756`
+The earlier accepted provider generation was `f74ce0f369fd41b5b99811e0769dc756`
 (CLI contract 2/default result storage); re-source activation in your shell.
 The earlier runtime-policy acceptance used `caa4d18002274defb5eebb15e35a9042`.
 Final 2026-10-12 `./bootstrap.sh --check`
@@ -239,7 +246,7 @@ new Project constructor/inventory/description/emission/store-publication signatu
 (including both optional emission arguments and publication fields), plus
 a Dune executable link probe. Metadata pointing into the temporary capture is rejected.
 The installed runtime must include `result_store.py`; `--version --json` must
-advertise CLI contract 2. This protocol version is separate from package/source
+advertise supported CLI contract 2 or 3. This protocol version is separate from package/source
 version. Missing assets or incompatible APIs/CLI fail before selection publication.
 The release build uses `-p` (which implies `--root .`) in the capture directory and
 a relative `_build` directory so installed archive paths remain relocatable.
@@ -276,7 +283,7 @@ python3 scripts/test_asic_dependency.py
 dune runtest scripts --force
 ```
 
-All 17 setup tests also participate in ordinary `dune runtest`, using injected
+All 18 setup tests also participate in ordinary `dune runtest`, using injected
 processes without nested Dune calls. Real refresh runs its Dune consumer probe
 before publication.
 
@@ -482,10 +489,28 @@ success retains the previous two-field payload (scripts must now request the fla
 
 `preflight` and `run` accept `--bundle PATH`; otherwise they emit/select the
 **current** project bundle without emitter output leaking into provider stdout.
-They require `hardcaml-asic-flow` on PATH and check its CLI contract 2 metadata
+They require `hardcaml-asic-flow` on PATH and check its CLI contract 2 or 3 metadata
 before emission. There is no checkout fallback or automatic dependency refresh.
 Dispatch uses executable/argv and replaces the consumer process, preserving
 provider exit status and signals. Provider policy and report JSON remain shared.
+
+Contract 3 also makes provider `stages`, all `observation` queries,
+`checkpoint-inspect`, `finalize`, and `finalization-inspect` human-readable by
+default. Parsing callers must pass `--json`; observed stages and finalize emit
+allocation/terminal JSONL (parse each line). Observation queries and inspectors
+return one complete object. Global, command-local and nested observation-query
+flags work. Inspection is read-only; `checkpoint-inspect --restart-to cts` only
+validates continuation, without running CTS. For example:
+
+```sh
+hardcaml-asic-flow observation inspect "$ATTEMPT"
+hardcaml-asic-flow observation inspect "$ATTEMPT" --json
+hardcaml-asic-flow checkpoint-inspect "$PLACEMENT" --restart-to cts
+hardcaml-asic-flow checkpoint-inspect "$PLACEMENT" --restart-to cts --json
+```
+
+See [current activation and verification](docs/dependency_commands.md) and the
+provider's [presentation closeout](../hardcaml_asic/docs/development/human-readable-flow-output.md).
 
 Both forward absolute `--results-root` and `--toolchain`: explicit `--toolchain`
 wins over nonempty `TOOLCHAIN`, then `<project-root>/_flow_tools` is the default.

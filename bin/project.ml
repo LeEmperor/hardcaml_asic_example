@@ -22,10 +22,11 @@ let check_provider provider =
   let channel = U.open_process_args_in provider [|provider; "--version"; "--json"|] in
   let metadata = Exn.protect ~f:(fun () -> Yojson.Safe.from_channel channel)
     ~finally:(fun () -> match U.close_process_in channel with
-      | U.WEXITED 0 -> () | _ -> failwith "Provider --version --json failed; CLI contract 2 is required") in
+       | U.WEXITED 0 -> () | _ -> failwith "Provider --version --json failed; CLI contract 2 or 3 is required") in
   let open Yojson.Safe.Util in
-  if not (Poly.equal (metadata |> member "cli_contract" |> member "version") (`Int 2)) then
-    failwith "Installed hardcaml-asic-flow requires CLI contract 2; install/activate a compatible provider"
+   match metadata |> member "cli_contract" |> member "version" with
+   | `Int (2 | 3) -> ()
+   | _ -> failwith "Installed hardcaml-asic-flow requires supported CLI contract 2 or 3; install/activate a compatible provider"
 ;;
 
 let discover () =
@@ -87,7 +88,7 @@ let main command args =
         let path = anchor_executable (Filename.concat (if String.is_empty dir then "." else dir) "hardcaml-asic-flow") in
         try U.access path [U.X_OK]; if is_file path then Some path else None with _ -> None) with
       | Some path -> check_provider path; Some path
-      | None -> failwith "hardcaml-asic-flow is not on PATH; install/activate a compatible provider (CLI contract 2).") else None in
+       | None -> failwith "hardcaml-asic-flow is not on PATH; install/activate a compatible provider (CLI contract 2 or 3).") else None in
     let emit () =
       if Option.is_none explicit then List.iter (Project.source_inputs project) ~f:(fun input ->
         let path = Filename.concat root input in
@@ -122,7 +123,7 @@ let main command args =
         @ (if !native then ["--native"] else []) @ (if !json then ["--json"] else [])
         @ (if !verbose then ["--verbose"] else []) in
       let provider = Option.value_exn provider in
-      if !verbose then eprintf "Dispatching installed provider %s (requires CLI contract 2)\n%!" provider;
+       if !verbose then eprintf "Dispatching installed provider %s (supports CLI contract 2 or 3)\n%!" provider;
       U.execv provider (Array.of_list (provider :: argv))))
 ;;
 
@@ -134,4 +135,4 @@ let () =
   with
   | Stdlib.Arg.Bad message -> eprintf "%s\n%!" message; Stdlib.exit 2
   | Stdlib.Arg.Help message -> printf "%s%!" message
-  | exn -> eprintf "project failed: %s\nUse a committed source checkout with the declared inputs and a compatible installed provider (CLI contract 2).\n%!" (Exn.to_string exn); Stdlib.exit 1
+   | exn -> eprintf "project failed: %s\nUse a committed source checkout with the declared inputs and a compatible installed provider (CLI contract 2 or 3).\n%!" (Exn.to_string exn); Stdlib.exit 1

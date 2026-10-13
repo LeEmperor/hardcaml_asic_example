@@ -50,7 +50,7 @@ class RoutingTests(unittest.TestCase):
         provider = self.providers / "hardcaml-asic-flow"
         provider.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 if '--version' in sys.argv:
-    print(json.dumps({'cli_contract': {'version': int(os.environ.get('CONTRACT', '2'))}}))
+    print(json.dumps({'cli_contract': {'version': json.loads(os.environ.get('CONTRACT', '2'))}}))
 else:
     with open(os.environ['RECORD'], 'a') as f:
         f.write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'executable': sys.argv[0]}) + '\\n')
@@ -153,6 +153,27 @@ else:
         self.assertIn('CLI contract 2', result.stderr)
         self.assertFalse((self.root / '_flow_results').exists())
         self.assertFalse(self.log.exists())
+
+    def test_supported_contracts_preserve_human_json_routing(self):
+        for version in ('2', '3'):
+            for flags in ([], ['--json']):
+                with self.subTest(version=version, flags=flags):
+                    result = self.invoke('preflight', '--bundle', 'unused', *flags,
+                                         env=dict(self.env, CONTRACT=version))
+                    self.assertEqual('--json' in self.call()['argv'], bool(flags))
+                    if flags:
+                        self.assertEqual(json.loads(result.stdout), {'recorded': True})
+                    else:
+                        self.assertEqual(result.stdout.strip(), 'Recorded implementation dispatch')
+        self.assertFalse((self.root / '_flow_results').exists())
+
+    def test_unknown_or_malformed_contract_refused_before_emission(self):
+        for version in ('4', 'null', '"3"', 'true', '3.0'):
+            with self.subTest(version=version):
+                result = self.invoke('preflight', env=dict(self.env, CONTRACT=version), status=1)
+                self.assertIn('CLI contract 2 or 3', result.stderr)
+                self.assertFalse((self.root / '_flow_results').exists())
+                self.assertFalse(self.log.exists())
 
     def test_directory_paths_preserve_symlink_parent_traversal(self):
         child = self.root / 'child'
