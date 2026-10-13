@@ -28,8 +28,12 @@ let source_inputs : Project.t -> string list = Project.source_inputs
 let describe : Project.t -> Core.Sexp.t = Project.describe
 let emit_bundle : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> Project.t
   -> source_root:string -> output_dir:string -> Bundle.t Core.Or_error.t = Project.emit_bundle
+let emit_store : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> Project.t
+  -> source_root:string -> store_dir:string -> (Bundle.t * Bundle.Publication.t) Core.Or_error.t = Project.emit_bundle_to_store
+let publish : Bundle.t -> store_dir:string -> Bundle.Publication.t Core.Or_error.t = Bundle.publish
+let publication (p : Bundle.Publication.t) = p.directory, p.reused
 let () = ignore project; ignore render; ignore create; ignore source_inputs;
-  ignore describe; ignore emit_bundle
+  ignore describe; ignore emit_bundle; ignore emit_store; ignore publish; ignore publication
 """
 
 
@@ -141,6 +145,7 @@ def project_api_check(data):
         "source_inputs": r"valsource_inputs:t->stringlist",
         "describe": r"valdescribe:t->Sexp\.t",
         "emit_bundle": r"valemit_bundle:\?inputs:Target\.Inputs\.t->\?include_simulation:bool->t->source_root:string->output_dir:string->Bundle\.tOr_error\.t",
+        "emit_bundle_to_store": r"valemit_bundle_to_store:\?inputs:Target\.Inputs\.t->\?include_simulation:bool->t->source_root:string->store_dir:string->\(Bundle\.t\*Bundle\.Publication\.t\)Or_error\.t",
     }
     for name, signature in signatures.items():
         if not re.search(signature, text):
@@ -157,6 +162,14 @@ def api_check(entries):
         if name not in entries or token not in entries[name][1]:
             raise Error(f"expected hardcaml_asic source with renamed public API: missing/incompatible {name}")
     project_api_check(entries.get("lib/project.mli", (None, b""))[1])
+    bundle_api_check(entries["lib/bundle.mli"][1])
+
+
+def bundle_api_check(data):
+    text = re.sub(r"\s+", "", re.sub(r"\(\*.*?\*\)", "", data.decode(), flags=re.S))
+    if ("modulePublication:sigtypet=private{directory:string;reused:bool}" not in text
+            or "valpublish:t->store_dir:string->Publication.tOr_error.t" not in text):
+        raise Error("incompatible Bundle publication API")
 
 
 def materialize(entries, destination):
@@ -272,7 +285,8 @@ def validate_install(generation, work, runner):
                      "flow/hardcaml_asic_flow/managed_python.py",
                      "flow/hardcaml_asic_flow/runtime_contract.py",
                      "flow/hardcaml_asic_flow/runtime_observation.py",
-                     "flow/hardcaml_asic_flow/execution_transport.py",
+                      "flow/hardcaml_asic_flow/execution_transport.py",
+                      "flow/hardcaml_asic_flow/result_store.py",
                      "flow/hardcaml_asic_flow/data/managed-python.json",
                      "flow/hardcaml_asic_flow/data/toolchain.lock",
                      "flow/hardcaml_asic_flow/data/toolchain.sh", "flow/hardcaml_asic_flow/data/version.txt"):
@@ -284,6 +298,7 @@ def validate_install(generation, work, runner):
         if token not in (package / name).read_text():
             raise Error(f"installed public API incompatible: {name}")
     project_api_check((package / "project.mli").read_bytes())
+    bundle_api_check((package / "bundle.mli").read_bytes())
     for path in generation.rglob("*"):
         if path.is_symlink() and not path.resolve(strict=True).is_relative_to(generation):
             raise Error(f"installed symlink escapes immutable generation: {path}")
@@ -305,6 +320,9 @@ def validate_install(generation, work, runner):
     (consumer / "probe.ml").write_text(PROBE)
     runner(["dune", "build", "--root", str(consumer), "probe.exe"], cwd=consumer, env=env)
     runner([str(generation / "bin/hardcaml-asic-flow"), "--help"], env=env)
+    metadata = json.loads(runner([str(generation / "bin/hardcaml-asic-flow"), "--version", "--json"], env=env))
+    if metadata.get("cli_contract", {}).get("version") != 2:
+        raise Error("installed provider requires CLI contract 2")
 
 
 def refresh(source, mode, store, record, runner=run, remove_source_build_override=False):

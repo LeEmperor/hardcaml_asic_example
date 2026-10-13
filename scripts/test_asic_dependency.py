@@ -15,6 +15,11 @@ val create : name:string -> ?source_inputs:string list -> policy:Resource_policy
 val source_inputs : t -> string list
 val describe : t -> Sexp.t
 val emit_bundle : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> t -> source_root:string -> output_dir:string -> Bundle.t Or_error.t
+val emit_bundle_to_store : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> t -> source_root:string -> store_dir:string -> (Bundle.t * Bundle.Publication.t) Or_error.t
+"""
+BUNDLE_API = """val render : ?simulation_project:Elaborated_project.t -> unit
+module Publication : sig type t = private { directory : string; reused : bool } end
+val publish : t -> store_dir:string -> Publication.t Or_error.t
 """
 
 
@@ -31,7 +36,7 @@ class SetupTests(unittest.TestCase):
             "dune-project": "(lang dune 3.17)\n(name hardcaml_asic)\n",
             "lib/elaborated_project.mli": "type t\n",
             "lib/resolved_flow.mli": "type t = private { elaborated_project : Elaborated_project.t }\n",
-            "lib/bundle.mli": "val render : ?simulation_project:Elaborated_project.t -> unit\n",
+            "lib/bundle.mli": BUNDLE_API,
             "lib/project.mli": PROJECT_API,
             "flow/dune": "hardcaml-asic-flow\n",
             "toolchain.lock": "fixture data\n",
@@ -92,6 +97,7 @@ class SetupTests(unittest.TestCase):
                          "flow/hardcaml_asic_flow/runtime_contract.py",
                          "flow/hardcaml_asic_flow/runtime_observation.py",
                          "flow/hardcaml_asic_flow/execution_transport.py",
+                         "flow/hardcaml_asic_flow/result_store.py",
                          "flow/hardcaml_asic_flow/data/managed-python.json",
                          "flow/hardcaml_asic_flow/data/toolchain.lock",
                          "flow/hardcaml_asic_flow/data/toolchain.sh", "flow/hardcaml_asic_flow/data/version.txt"):
@@ -104,6 +110,8 @@ class SetupTests(unittest.TestCase):
                 (package / "resolved_flow.mli").write_text("old API")
             if self.failure == "old-project-api":
                 (package / "project.mli").write_text("type t")
+            if self.failure == "old-bundle-api":
+                (package / "bundle.mli").write_text("?simulation_project:")
             if self.failure == "capture-metadata":
                 (package / "dune-package").write_text(str(self.snapshot / "_build/install/default/lib"))
             if self.failure == "external-link":
@@ -118,7 +126,7 @@ class SetupTests(unittest.TestCase):
                 (package / "flow/hardcaml_asic_flow/managed_python.py").unlink()
             if self.failure == "missing-managed-data":
                 (package / "flow/hardcaml_asic_flow/data/managed-python.json").unlink()
-            for module in ("runtime_contract", "runtime_observation", "execution_transport"):
+            for module in ("runtime_contract", "runtime_observation", "execution_transport", "result_store"):
                 if self.failure == "missing-" + module:
                     (package / f"flow/hardcaml_asic_flow/{module}.py").unlink()
         elif stage == "query":
@@ -130,8 +138,11 @@ class SetupTests(unittest.TestCase):
             self.assertIn("?simulation_project:None", Path(argv[-1]).read_text())
             self.assertEqual(Path(argv[-1]).read_text(), dep.PROBE)
             for token in ("Project.create ?source_inputs:", "Project.source_inputs", "Project.describe",
-                          "?inputs:Target.Inputs.t", "?include_simulation:bool", "Project.emit_bundle"):
+                          "?inputs:Target.Inputs.t", "?include_simulation:bool", "Project.emit_bundle",
+                          "Project.emit_bundle_to_store", "Bundle.publish", "p.directory", "p.reused"):
                 self.assertIn(token, dep.PROBE)
+        if "--version" in argv:
+            return json.dumps({"cli_contract": {"version": 1 if self.failure == "old-cli" else 2}}).encode()
         return b""
 
     def refresh(self, mode="recorded"):
@@ -161,7 +172,7 @@ class SetupTests(unittest.TestCase):
 
     def test_failures_preserve_publication(self):
         first = self.refresh()
-        for stage in ("build", "install", "query", "ocamlc", "dune-probe", "capture-metadata", "cli", "missing-data", "missing-probe", "missing-managed-module", "missing-managed-data", "missing-runtime_contract", "missing-runtime_observation", "missing-execution_transport", "wrong-package", "old-api", "old-project-api", "external-link"):
+        for stage in ("build", "install", "query", "ocamlc", "dune-probe", "capture-metadata", "cli", "missing-data", "missing-probe", "missing-managed-module", "missing-managed-data", "missing-runtime_contract", "missing-runtime_observation", "missing-execution_transport", "missing-result_store", "old-bundle-api", "old-cli", "wrong-package", "old-api", "old-project-api", "external-link"):
             with self.subTest(stage=stage):
                 self.failure = stage
                 with self.assertRaises(dep.Error):
@@ -219,9 +230,16 @@ class SetupTests(unittest.TestCase):
     def test_project_api_requires_all_new_signatures(self):
         dep.project_api_check(PROJECT_API.encode())
         for token in ("?source_inputs:string list", "val source_inputs", "val describe", "val emit_bundle",
+                      "val emit_bundle_to_store", "store_dir:string", "Bundle.Publication.t",
                       "?inputs:Target.Inputs.t", "?include_simulation:bool", "output_dir:string"):
             with self.subTest(token=token), self.assertRaises(dep.Error):
                 dep.project_api_check(PROJECT_API.replace(token, "obsolete").encode())
+
+    def test_bundle_publication_requires_signature_and_private_fields(self):
+        dep.bundle_api_check(BUNDLE_API.encode())
+        for token in ("val publish", "store_dir:string", "private", "directory : string", "reused : bool"):
+            with self.subTest(token=token), self.assertRaises(dep.Error):
+                dep.bundle_api_check(BUNDLE_API.replace(token, "obsolete").encode())
 
     def test_validate_source_reports_uncompiled_and_does_not_publish(self):
         result = dep.run(["python3", str(Path(dep.__file__)), "validate-source",

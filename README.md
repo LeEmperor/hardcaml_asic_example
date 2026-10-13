@@ -6,7 +6,8 @@ bundle acceptance, and PDK-free Cyclesim and generated-Verilog tests. This is a
 **development specimen with an explicit consumer dependency record**.
 It uses `core`, `hardcaml`, `ppx_jane`, `ppx_hardcaml`, `yojson`, and a selectable
 development build of `hardcaml_asic` exposing the hardened `Resolved_flow.mli` and
-the shared `Project.source_inputs`, `describe`, and `emit_bundle` API.
+the shared `Project.source_inputs`, `describe`, `emit_bundle`, and
+`emit_bundle_to_store` API, `Bundle.publish`, and flow CLI contract **2**.
 The project declares Dune language 3.17 and has been built with Dune 3.24.2 and
 OCaml 5.2.0+ox. The record is not an opam pin. The installed
 Hardcaml interfaces under `~/.opam/5.2.0+ox/lib/hardcaml/` are the API authority.
@@ -124,16 +125,22 @@ bounded extraction, staged/final probes and a final receipt. Retained generation
 are never replaced. This is archive integrity/readiness, not P6.5 attestation.
 See [pin, semantics and network-opt-in reproduction](../hardcaml_asic/docs/guides/consumer-installation.md#managed-python-integrity-and-initial-platform).
 
-The accepted current provider generation is `caa4d18002274defb5eebb15e35a9042`;
-re-source activation in your shell. Final 2026-10-12 `./bootstrap.sh --check`
+The latest accepted provider generation is `f74ce0f369fd41b5b99811e0769dc756`
+(CLI contract 2/default result storage); re-source activation in your shell.
+The earlier runtime-policy acceptance used `caa4d18002274defb5eebb15e35a9042`.
+Final 2026-10-12 `./bootstrap.sh --check`
 including container exits **0**. The earlier five-gap result is historical.
 Host flow Python remains **3.11**; the official LibreLane **3.1.0.dev3** image
 may use supported Python **3.10..3.14** (observed **3.13.13**, Requires-Python >=3.10).
 This needs **fresh bundle emission**, not editing an old bundle or a waiver.
 See [simple emission/preflight commands and runtime policy](../hardcaml_asic/docs/guides/flow.md#runtime-policy-and-launch-binding)
 and [current acceptance](../hardcaml_asic/docs/phase_plan.md#hostcontainer-runtime-policy-closeout).
-The recorded consumer pin is unchanged pending owner adoption. The acceptance
-bundle preserves its earlier dirty README snapshot; this documentation update
+The recorded consumer pin is unchanged pending owner adoption. The latest
+[result-store closeout](../hardcaml_asic/docs/phase_plan.md#default-result-store-and-cli-2-closeout)
+records the preserved 21-file bundle and readiness-only evidence. Final review
+also preserves directory symlink-parent/`..` traversal; focused build and nine
+routing tests passed. This source/docs change follows the stored acceptance
+input snapshot. The acceptance bundle preserves its earlier dirty README; this update
 does not change that stored input or identity. The historical observation probe
 ran zero of eleven cases; neither its rerun nor a real ASIC flow has run in this
 closeout. The old source 3.12 environment is unchanged.
@@ -156,12 +163,12 @@ and checks, not TT/PDK/venv requirements. These and `--python` are forwarded wit
 consumer-side per-tool logic.
 
 Project `describe` and `emit` below work independently of flow-tool provisioning.
-For subsequent shared-CLI operations, pass the chosen root explicitly:
+The project CLI passes its selected tool and results roots to the installed provider:
 
 ```sh
-hardcaml-asic-flow preflight /absolute/path/to/bundle --toolchain "$PWD/_flow_tools"
-hardcaml-asic-flow run /absolute/path/to/bundle --toolchain "$PWD/_flow_tools" \
-  --runs /absolute/path/to/runs --stage synthesis
+dune exec bin/project.exe -- preflight
+# Explicit expensive implementation request (not a bootstrap check):
+dune exec bin/project.exe -- run --stage synthesis
 ```
 
 Replace that root when using an override. Sourcing the provider-generated
@@ -196,7 +203,8 @@ python3 scripts/asic_dependency.py validate-source \
 ```
 
 **Project API transition:** the recorded `171476...` revision does not yet expose
-`Project.source_inputs`, `describe`, `emit_bundle`, and constructor `?source_inputs`.
+`Project.source_inputs`, `describe`, `emit_bundle`, `emit_bundle_to_store`,
+`Bundle.publish`/`Bundle.Publication`, and constructor `?source_inputs`.
 The strengthened check now rejects that recorded API, including the historical
 `validate-source` command above. Keep the record unchanged until its owner advances
 it. During this transition, explicitly refresh **development** bytes with the new
@@ -227,9 +235,12 @@ and an atomically replaced `current` symlink. Each generation contains installed
 the final generation prefix; publication follows interface/runtime-file checks,
 CLI `--help`, an exact ocamlfind resolution check and compilation of a tiny external
 consumer using `Resolved_flow.t`, `Elaborated_project.t`, `Bundle.render`, and the
-new Project constructor/inventory/description/emission signatures (including both
-optional emission arguments), plus
+new Project constructor/inventory/description/emission/store-publication signatures
+(including both optional emission arguments and publication fields), plus
 a Dune executable link probe. Metadata pointing into the temporary capture is rejected.
+The installed runtime must include `result_store.py`; `--version --json` must
+advertise CLI contract 2. This protocol version is separate from package/source
+version. Missing assets or incompatible APIs/CLI fail before selection publication.
 The release build uses `-p` (which implies `--root .`) in the capture directory and
 a relative `_build` directory so installed archive paths remain relocatable.
 One writer holds a nonblocking store lock. Failures retain the previous selection;
@@ -265,7 +276,7 @@ python3 scripts/test_asic_dependency.py
 dune runtest scripts --force
 ```
 
-All 16 setup tests also participate in ordinary `dune runtest`, using injected
+All 17 setup tests also participate in ordinary `dune runtest`, using injected
 processes without nested Dune calls. Real refresh runs its Dune consumer probe
 before publication.
 
@@ -409,17 +420,27 @@ consumer's OCaml dependencies; the explicit consumer record above selects the pr
 The façade also retains `Fifo_asic.Tt_wrapper` for wrapper tests. Inventory lives
 in `asic/project.ml` and is passed to the generic constructor.
 
-The Dune executable has these subcommands (both emit options required):
+The Dune executable has four subcommands. Human output is the default;
+`--json` requests machine output and `--verbose` adds diagnostics on stderr:
 
 ```sh
 dune exec bin/project.exe -- describe
+dune exec bin/project.exe -- describe --json
+dune exec bin/project.exe -- emit
+dune exec bin/project.exe -- emit --json
+dune exec bin/project.exe -- preflight --json
+# Requires an explicit expensive implementation stage:
+dune exec bin/project.exe -- run --stage synthesis
+# Exact-output compatibility mode:
 dune exec bin/project.exe -- emit \
   --source-root /absolute/path/to/consumer-source \
-  --output-dir /absolute/path/to/new-or-empty-bundle
+  --output-dir /absolute/path/to/new-or-empty-bundle --json
 ```
 
 `describe` prints the shared `Hardcaml_asic.Project.describe` Sexp: local declaration
-facts, **not a public Workbench provider schema**. It does not elaborate, inspect
+facts, **not a public Workbench provider schema**. Its local JSON shape is
+`{"project_name":"controlled_fifo_specimen","declaration_sexp":"..."}`.
+It does not elaborate, inspect
 Git, create output directories, or run EDA. No arguments or invalid commands exit
 2 with usage; `--help` exits 0. There is no expensive default or legacy CLI shim.
 
@@ -429,14 +450,71 @@ it does not rebuild the executable. Use an executable built from the matching
 sources. The explicit root allows fixture-based acceptance to supply a
 synthetic committed source checkout without altering the actual project checkout.
 
-The emitter creates `Fifo_asic.project ()` and calls `Hardcaml_asic.Project.emit_bundle`.
+Root discovery walks upward from the caller's working directory to a directory
+containing both `dune-project` and `asic-dependency.json`. Implicit emission then
+validates all declared source inputs. Automatic discovery rejects generated
+`_build`, `_flow_results`, and `.dev` trees, and callers outside the project must
+supply `--project-root ROOT` or `--source-root ROOT`. These are root aliases;
+both may be given only if their normalized absolute paths agree. No sibling
+checkout, compiled source path, newest-bundle search or UI root state is used.
+All user relative paths (also `TOOLCHAIN`) are normalized against the caller CWD;
+provider dispatch preserves that CWD.
+
+`--results-root` defaults to `<project-root>/_flow_results`. Default emission
+calls the shared `Hardcaml_asic.Project.emit_bundle_to_store` into its `bundles/`
+store. Complete objects live in hidden `bundles/.objects/<identity>.*` directories;
+exclusive identity symlinks publish them at `bundles/<identity>`. Repeat emission
+renders current inputs and reuses only exactly verified matching bytes and paths.
+Corrupt or unexpected existing contents are refused without overwrite. Retain
+published hidden objects: there is no automatic GC. This is bounded bundle reuse,
+not a physical-result cache or run resume.
+
+Explicit `--output-dir DIR` instead calls `Hardcaml_asic.Project.emit_bundle`
+at that exact new/empty directory, retaining the compatibility behavior.
 The shared API owns implementation resolution, default simulation elaboration,
 rendering and writing. The library owns RTL/config/SDC/metadata/manifest emission and
-provenance. Success prints one JSON line:
+provenance. Human success reports created/reused, path and identity. With `--json`,
+success retains the previous two-field payload (scripts must now request the flag):
 
 ```json
 {"identity":"<bundle SHA-256>","output_dir":"<requested path>"}
 ```
+
+`preflight` and `run` accept `--bundle PATH`; otherwise they emit/select the
+**current** project bundle without emitter output leaking into provider stdout.
+They require `hardcaml-asic-flow` on PATH and check its CLI contract 2 metadata
+before emission. There is no checkout fallback or automatic dependency refresh.
+Dispatch uses executable/argv and replaces the consumer process, preserving
+provider exit status and signals. Provider policy and report JSON remain shared.
+
+Both forward absolute `--results-root` and `--toolchain`: explicit `--toolchain`
+wins over nonempty `TOOLCHAIN`, then `<project-root>/_flow_tools` is the default.
+`--python`, `--support-tools`, `--pdk-root`, `--native`, `--json` and `--verbose`
+are forwarded when supplied. `preflight --output FILE` means the exact report
+file with an existing parent, not a bundle output directory. Default preflight
+writes a durable diagnostic operation receipt/report beneath
+`_flow_results/operations/<UTC_shortid>/`; explicit output creates no additional
+operation. This differs from read-only `bootstrap.sh --check` tool diagnostics.
+
+`run` requires `--stage synthesis|full` before emission or dispatch; `--runs DIR`
+overrides the default `<results-root>/runs`. Provider run allocates a fresh run
+and performs its own fresh preflight before probes. The consumer does not add a
+duplicate preflight, collect, postcheck or signoff. Completed implementation is
+not physical acceptance. The layout is:
+
+```text
+_flow_results/
+  bundles/<identity> -> .objects/<identity>.<unique>
+  bundles/.objects/<identity>.<unique>/...
+  operations/<UTC_shortid>/...   # default preflight receipt/report
+  runs/<fresh-timestamp>/...     # implementation run and preflight
+```
+
+There is no project `execute`, `postcheck` or `inspect` yet. The full replay bench
+requires `+trace` and is not a physical postcheck contract. Read-only report and
+explicit collect remain installed-provider operations on existing runs; provider
+`collect --json` writes normal results, legacy `collect --stdout` is read-only
+JSON, and `report` is read-only.
 
 Failures print the library diagnostic plus source-provenance guidance to stderr
 and exit 1; missing CLI arguments exit 2. Bundle output must be new or empty;
@@ -474,6 +552,18 @@ captures the consumer's dependency expectation, not proof of linked library iden
 Local refresh receipts and setup scripts are not hardware generation inputs.
 
 ## Bundle and generated RTL acceptance
+
+Slice 4 focused verification uses the provider's already built install tree via
+temporary `OCAMLPATH=/absolute/provider/_build/install/default/lib`, because the
+selected private consumer generation predates store publication. The routing
+suite uses seven synthetic-source/recording-provider cases, including verified
+reuse/corrupt refusal, current-source selection, root validation, overrides,
+stdout purity, exit status and signal propagation. The dependency suite has 17
+tests, including missing `result_store.py`, bad publication API and old CLI
+refusal before publication. These do not run physical tools. Managed development
+refresh, installed-provider real preflight and final real-checkout acceptance
+are deferred to the next slice after this README settles; the slice 3 evidence
+below remains historical.
 
 For acceptance against the **actual checkout**, activate and build first, then use
 a fresh ignored work directory (the following path is used for slice 3 evidence;
@@ -522,8 +612,9 @@ python3 acceptance/check_bundle.py \
   --baseline-inputs /absolute/path/to/saved-inputs.txt
 ```
 
-The baseline uses its old
-flags; the current executable uses `emit`. The fixture stages the union of both
+The baseline uses its old flags; the current executable uses `emit --json`.
+Saved standalone binaries are the default; for a saved project-v1 binary select
+`--baseline-cli project-v1` (uses `emit` without the new flag). The fixture stages the union of both
 inventories at one synthetic revision, restoring **only old-only paths** from the
 saved source snapshot. Shared paths keep current bytes. Each bundle is inspected
 against its own inventory. Comparison requires byte-identical synthesis RTL,

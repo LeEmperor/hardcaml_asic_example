@@ -133,7 +133,7 @@ def real_checkout(emitter, exporter, source, bench, work, require_rtl):
     manifests = []
     for name in ("first", "second"):
         output = work / name
-        response = json.loads(run([emitter, "emit", "--source-root", source, "--output-dir", output], env).stdout)
+        response = json.loads(run([emitter, "emit", "--json", "--source-root", source, "--output-dir", output], env).stdout)
         m = inspect(output, response, source, inputs)
         require(m["source_revision"] == revision, "actual checkout revision")
         require({x["path"]: x["git_status"] for x in m["source_inputs"]} == statuses,
@@ -163,6 +163,8 @@ def main():
                         help="Fresh preserved output directory required with --real-checkout")
     parser.add_argument("--baseline-emitter", type=Path,
                         help="Saved old CLI executable (without emit subcommand)")
+    parser.add_argument("--baseline-cli", choices=("standalone", "project-v1"), default="standalone",
+                        help="Saved baseline CLI syntax (never adds --json)")
     parser.add_argument("--baseline-source-root", type=Path,
                         help="Saved source snapshot supplying only old-only inventory paths")
     parser.add_argument("--baseline-inputs", type=Path,
@@ -214,7 +216,8 @@ def main():
 
         def emit(name, ok=True, executable=emitter):
             output = tmp / name
-            command = [executable] + (["emit"] if executable == emitter else [])
+            command = [executable] + (["emit", "--json"] if executable == emitter else
+                                      (["emit"] if args.baseline_cli == "project-v1" else []))
             result = run([*command, "--source-root", source, "--output-dir", output], env, ok=ok)
             return output, json.loads(result.stdout) if ok else result
 

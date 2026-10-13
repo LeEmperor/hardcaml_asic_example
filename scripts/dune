@@ -12,3 +12,10 @@
  (alias runtest)
  (deps ../bootstrap.sh test_bootstrap.py)
  (action (run python3 %{dep:test_bootstrap.py})))
+
+(rule
+ (alias runtest)
+ (deps test_project_routing.py (source_tree ../lib) (source_tree ../asic)
+       ../dune-project ../asic-dependency.json ../README.md ../bin/dune ../bin/project.ml)
+ (action (run python3 %{dep:test_project_routing.py} %{exe:../bin/project.exe}
+              %{exe:../acceptance/export_trace.exe} ..)))
