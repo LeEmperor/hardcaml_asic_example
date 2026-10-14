@@ -30,6 +30,18 @@ Refresh bounds its provider build/install and external Dune link probe to `-j 20
 It publishes a private ignored installation and retains old generations. It
 does not change the shared opam installation/pin or `asic-dependency.json`.
 
+The current thin-provider validator requires the native CLI and service helpers,
+the full runtime-nine Python payload and all four data files. It no longer requires
+installed `cli.py`, `execution_transport.py` or `result_store.py`. Source validation
+checks the actual `flow_cli` public executable stanza in `bin/dune`.
+Installed Python planner/reader/service imports (including `execution_plan`,
+`flow_observation`, `IncrementalReader`) are retired: use native CLI/OCaml APIs.
+Optional `PYTHONPATH=/path/to/provider/flow` is deprecated SOURCE-only oracle access,
+not installed support. Package 0.1.0 and CLI4 are unchanged only because CLI contracts
+are unchanged. The bounded 2026-10-14 validation used a disposable hardlinked prefix
+and independent installed-library linkage; it did not refresh the normal selection
+or alter the recorded dependency pin.
+
 Historical contract-3 integration verified 2026-10-13: selected generation
 `90770d6ce6f04696b3b0082fb3898944`, snapshot SHA-256
 `be2db93d3f1b92a8b240167ebadd0b4c0a81484e78356c56cec867f5b19f8e4a`.

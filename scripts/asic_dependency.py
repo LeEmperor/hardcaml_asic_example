@@ -157,11 +157,14 @@ def api_check(entries):
     required = {"dune-project": b"hardcaml_asic", "lib/elaborated_project.mli": b"type t",
                 "lib/resolved_flow.mli": b"elaborated_project : Elaborated_project.t",
                 "lib/bundle.mli": b"?simulation_project:",
-                "flow/dune": b"hardcaml-asic-flow"}
+                "bin/dune": b"(public_name hardcaml-asic-flow)"}
     for name, token in required.items():
         if name not in entries or token not in entries[name][1]:
             raise Error(f"expected hardcaml_asic source with renamed public API: missing/incompatible {name}")
     project_api_check(entries.get("lib/project.mli", (None, b""))[1])
+    native_dune = re.sub(r";[^\n]*", "", entries["bin/dune"][1].decode())
+    if not re.search(r"\(executable\s+\(name flow_cli\)(?:(?!\(executable).)*?\(public_name hardcaml-asic-flow\)", native_dune, re.S):
+        raise Error("expected native flow_cli executable owning hardcaml-asic-flow in bin/dune")
     bundle_api_check(entries["lib/bundle.mli"][1])
 
 
@@ -281,12 +284,15 @@ export {variable}
 def validate_install(generation, work, runner):
     package = generation / "lib/hardcaml_asic"
     for relative in ("META", "dune-package", "elaborated_project.mli", "resolved_flow.mli", "bundle.mli", "project.mli",
-                     "flow/hardcaml_asic_flow/cli.py", "flow/hardcaml_asic_flow/probe.py",
+                     "flow/hardcaml_asic_flow/__init__.py",
+                     "flow/hardcaml_asic_flow/backend_protocol.py",
+                     "flow/hardcaml_asic_flow/librelane_bridge.py",
+                     "flow/hardcaml_asic_flow/stage_metadata_probe.py",
+                     "flow/hardcaml_asic_flow/probe.py",
                      "flow/hardcaml_asic_flow/managed_python.py",
+                     "flow/hardcaml_asic_flow/paths.py",
                      "flow/hardcaml_asic_flow/runtime_contract.py",
                      "flow/hardcaml_asic_flow/runtime_observation.py",
-                      "flow/hardcaml_asic_flow/execution_transport.py",
-                      "flow/hardcaml_asic_flow/result_store.py",
                      "flow/hardcaml_asic_flow/data/managed-python.json",
                      "flow/hardcaml_asic_flow/data/toolchain.lock",
                      "flow/hardcaml_asic_flow/data/toolchain.sh", "flow/hardcaml_asic_flow/data/version.txt"):
@@ -298,6 +304,15 @@ def validate_install(generation, work, runner):
         if token not in (package / name).read_text():
             raise Error(f"installed public API incompatible: {name}")
     project_api_check((package / "project.mli").read_bytes())
+    for name in ("hardcaml-asic-flow", *("hardcaml-asic-experimental-" + suffix for suffix in (
+            "execute", "archive", "finalization", "finalization-inspect", "postcheck",
+            "report", "collect", "run", "preflight", "observation-read", "stages",
+            "plan-inspect", "segment-execute", "checkpoint-inspect"))):
+        executable = generation / "bin" / name
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise Error(f"incomplete native installation: {name}")
+        if executable.read_bytes()[:4] != b"\x7fELF":
+            raise Error(f"expected native executable: {name}")
     bundle_api_check((package / "bundle.mli").read_bytes())
     for path in generation.rglob("*"):
         if path.is_symlink() and not path.resolve(strict=True).is_relative_to(generation):

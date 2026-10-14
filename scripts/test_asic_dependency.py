@@ -39,7 +39,7 @@ class SetupTests(unittest.TestCase):
             "lib/resolved_flow.mli": "type t = private { elaborated_project : Elaborated_project.t }\n",
             "lib/bundle.mli": BUNDLE_API,
             "lib/project.mli": PROJECT_API,
-            "flow/dune": "hardcaml-asic-flow\n",
+            "bin/dune": "(executable (name flow_cli) (public_name hardcaml-asic-flow) (package hardcaml_asic))\n",
             "toolchain.lock": "fixture data\n",
             ".gitignore": "_build/\n.toolchain/\nignored\n",
         }
@@ -94,12 +94,14 @@ class SetupTests(unittest.TestCase):
             generation = Path(argv[argv.index("--prefix") + 1])
             package = generation / "lib/hardcaml_asic"
             for name in ("META", "dune-package", "elaborated_project.mli", "resolved_flow.mli", "bundle.mli",
-                         "flow/hardcaml_asic_flow/cli.py", "flow/hardcaml_asic_flow/probe.py",
+                         "flow/hardcaml_asic_flow/__init__.py", "flow/hardcaml_asic_flow/probe.py",
+                         "flow/hardcaml_asic_flow/backend_protocol.py",
+                         "flow/hardcaml_asic_flow/librelane_bridge.py",
+                         "flow/hardcaml_asic_flow/stage_metadata_probe.py",
+                         "flow/hardcaml_asic_flow/paths.py",
                          "flow/hardcaml_asic_flow/managed_python.py",
                          "flow/hardcaml_asic_flow/runtime_contract.py",
                          "flow/hardcaml_asic_flow/runtime_observation.py",
-                         "flow/hardcaml_asic_flow/execution_transport.py",
-                         "flow/hardcaml_asic_flow/result_store.py",
                          "flow/hardcaml_asic_flow/data/managed-python.json",
                          "flow/hardcaml_asic_flow/data/toolchain.lock",
                          "flow/hardcaml_asic_flow/data/toolchain.sh", "flow/hardcaml_asic_flow/data/version.txt"):
@@ -119,7 +121,17 @@ class SetupTests(unittest.TestCase):
             if self.failure == "external-link":
                 (package / "external").symlink_to(self.source / "toolchain.lock")
             (generation / "bin").mkdir()
-            (generation / "bin/hardcaml-asic-flow").write_text("stub CLI")
+            for name in ("hardcaml-asic-flow", *("hardcaml-asic-experimental-" + suffix for suffix in (
+                    "execute", "archive", "finalization", "finalization-inspect", "postcheck",
+                    "report", "collect", "run", "preflight", "observation-read", "stages",
+                    "plan-inspect", "segment-execute", "checkpoint-inspect"))):
+                executable = generation / "bin" / name
+                executable.write_bytes(b"\x7fELFfixture native bytes")
+                executable.chmod(0o755)
+            if self.failure == "missing-native-helper":
+                (generation / "bin/hardcaml-asic-experimental-stages").unlink()
+            if self.failure == "shell-cli":
+                (generation / "bin/hardcaml-asic-flow").write_text("#!/bin/sh\n")
             if self.failure == "missing-data":
                 (package / "flow/hardcaml_asic_flow/data/toolchain.lock").unlink()
             if self.failure == "missing-probe":
@@ -128,7 +140,7 @@ class SetupTests(unittest.TestCase):
                 (package / "flow/hardcaml_asic_flow/managed_python.py").unlink()
             if self.failure == "missing-managed-data":
                 (package / "flow/hardcaml_asic_flow/data/managed-python.json").unlink()
-            for module in ("runtime_contract", "runtime_observation", "execution_transport", "result_store"):
+            for module in ("__init__", "backend_protocol", "librelane_bridge", "stage_metadata_probe", "paths", "runtime_contract", "runtime_observation"):
                 if self.failure == "missing-" + module:
                     (package / f"flow/hardcaml_asic_flow/{module}.py").unlink()
         elif stage == "query":
@@ -149,6 +161,13 @@ class SetupTests(unittest.TestCase):
 
     def refresh(self, mode="recorded"):
         return dep.refresh(self.source, mode, self.store, self.record, self.runner)
+
+    def test_source_cli_owner_must_be_an_actual_native_stanza(self):
+        entries = dep.development(self.source, self.store)
+        for data in (b"; (executable (name flow_cli) (public_name hardcaml-asic-flow))\n",
+                     b"(executable (name shell_adapter) (public_name hardcaml-asic-flow))\n"):
+            with self.subTest(data=data), self.assertRaises(dep.Error):
+                dep.api_check(dict(entries, **{"bin/dune": ("100644", data)}))
 
     def test_recorded_ignores_dirty_and_untracked_development_includes_them(self):
         (self.source / "toolchain.lock").write_text("dirty")
@@ -174,7 +193,7 @@ class SetupTests(unittest.TestCase):
 
     def test_failures_preserve_publication(self):
         first = self.refresh()
-        for stage in ("build", "install", "query", "ocamlc", "dune-probe", "capture-metadata", "cli", "missing-data", "missing-probe", "missing-managed-module", "missing-managed-data", "missing-runtime_contract", "missing-runtime_observation", "missing-execution_transport", "missing-result_store", "old-bundle-api", "old-cli", "wrong-package", "old-api", "old-project-api", "external-link"):
+        for stage in ("build", "install", "query", "ocamlc", "dune-probe", "capture-metadata", "cli", "missing-data", "missing-probe", "missing-managed-module", "missing-managed-data", "missing-runtime_contract", "missing-runtime_observation", "missing-__init__", "missing-backend_protocol", "missing-librelane_bridge", "missing-stage_metadata_probe", "missing-paths", "missing-native-helper", "shell-cli", "old-bundle-api", "old-cli", "wrong-package", "old-api", "old-project-api", "external-link"):
             with self.subTest(stage=stage):
                 self.failure = stage
                 with self.assertRaises(dep.Error):
