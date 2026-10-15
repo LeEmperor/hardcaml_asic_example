@@ -22,6 +22,9 @@ BUNDLE_API = """val render : ?simulation_project:Elaborated_project.t -> unit
 module Publication : sig type t = private { directory : string; reused : bool } end
 val publish : t -> store_dir:string -> Publication.t Or_error.t
 """
+GROUPED_PROJECT_API = (PROJECT_API.replace("Target.Inputs.t", "Platform.Target.Inputs.t")
+                       .replace("Flow.Catalog.resolved", "Hardcaml_asic_flow_domain.Catalog.resolved")
+                       .replace("Bundle.", "Elaboration.Bundle."))
 CATALOG_APIS = {
     "lib/flow/catalog.mli": "val create : unit val resolve : unit val declaration : unit",
     "lib/flow/profile.mli": "val create : unit val assignments : unit",
@@ -104,7 +107,7 @@ class SetupTests(unittest.TestCase):
         elif stage == "install":
             generation = Path(argv[argv.index("--prefix") + 1])
             package = generation / "lib/hardcaml_asic"
-            for name in ("META", "dune-package", "elaborated_project.mli", "resolved_flow.mli", "bundle.mli",
+            for name in ("META", "dune-package",
                          "flow/hardcaml_asic_flow/__init__.py", "flow/hardcaml_asic_flow/probe.py",
                          "flow/hardcaml_asic_flow/backend_protocol.py",
                          "flow/hardcaml_asic_flow/librelane_bridge.py",
@@ -119,16 +122,26 @@ class SetupTests(unittest.TestCase):
                 target = package / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text("stub installed bytes")
+            # Mirror the real install: flat lib/flow/ became flow_domain/; grouped keeps lib/ subdirectories.
+            grouped = (self.snapshot / "flow_domain").is_dir()
+            installed = dep.INSTALL_LAYOUTS["grouped" if grouped else "flat"]
             for source in (self.snapshot / "lib").rglob("*.mli"):
-                target = package / str(source.relative_to(self.snapshot / "lib")).replace('flow/', 'flow_domain/', 1)
+                relative = str(source.relative_to(self.snapshot / "lib"))
+                target = package / (relative if grouped else relative.replace('flow/', 'flow_domain/', 1))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+            for source in (self.snapshot / "flow_domain").rglob("*.mli"):
+                target = package / "flow_domain" / source.relative_to(self.snapshot / "flow_domain")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(source.read_bytes())
             if self.failure == "old-api":
-                (package / "resolved_flow.mli").write_text("old API")
+                (package / installed["resolved"]).write_text("old API")
             if self.failure == "old-project-api":
                 (package / "project.mli").write_text("type t")
             if self.failure == "old-bundle-api":
-                (package / "bundle.mli").write_text("?simulation_project:")
+                (package / installed["bundle"]).write_text("?simulation_project:")
+            if self.failure == "mixed-install":
+                (package / "elaborated_project.mli").write_text("type t\n")
             if self.failure == "capture-metadata":
                 (package / "dune-package").write_text(str(self.snapshot / "_build/install/default/lib"))
             if self.failure == "external-link":
@@ -175,6 +188,63 @@ class SetupTests(unittest.TestCase):
 
     def refresh(self, mode="recorded"):
         return dep.refresh(self.source, mode, self.store, self.record, self.runner)
+
+    def regroup(self):
+        # Move the fixture to the ad290d8 grouped layout and record that commit.
+        flat, grouped = dep.SOURCE_LAYOUTS["flat"], dep.SOURCE_LAYOUTS["grouped"]
+        for role in flat:
+            if flat[role] != grouped[role]:
+                target = self.source / grouped[role]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                (self.source / flat[role]).rename(target)
+        (self.source / "lib/project.mli").write_text(GROUPED_PROJECT_API)
+        self.fixture_git("add", "-A", ".")
+        self.fixture_git("commit", "-m", "grouped layout fixture")
+        self.record["revision"] = self.fixture_git("rev-parse", "HEAD").decode().strip()
+
+    def test_grouped_layout_validates_source_and_install(self):
+        self.regroup()
+        self.assertFalse((self.source / "lib/elaborated_project.mli").exists())
+        dep.api_check(dep.development(self.source, self.store))
+        report = json.loads(dep.run(["python3", str(Path(dep.__file__)), "validate-source",
+                                     "--source", str(self.source), "--revision", self.record["revision"]]))
+        self.assertIs(report["renamed_api_present"], True)
+        for mode in ("recorded", "development"):
+            with self.subTest(mode=mode):
+                receipt = self.refresh(mode)
+                package = Path(receipt["generation"]) / "lib/hardcaml_asic"
+                self.assertTrue((package / "elaboration/resolved.mli").is_file())
+                self.assertTrue((package / "flow/spec.mli").is_file())
+                self.assertFalse((package / "elaborated_project.mli").exists())
+
+    def test_grouped_layout_failures_and_mixed_layouts_refused(self):
+        self.regroup()
+        first = self.refresh()
+        entries = dep.development(self.source, self.store)
+        grouped = dep.SOURCE_LAYOUTS["grouped"]
+        with self.assertRaisesRegex(dep.Error, "catalog/plan API: lib/flow/spec.mli"):
+            dep.api_check({k: v for k, v in entries.items() if k != "lib/flow/spec.mli"})
+        with self.assertRaisesRegex(dep.Error, "renamed public API.*lib/elaboration/resolved.mli"):
+            dep.api_check({k: v for k, v in entries.items() if k != grouped["resolved"]})
+        # A flat-layout spec does not satisfy a grouped provider.
+        moved = {("lib/flow_spec.mli" if k == "lib/flow/spec.mli" else k): v for k, v in entries.items()}
+        with self.assertRaisesRegex(dep.Error, "catalog/plan API"):
+            dep.api_check(moved)
+        with self.assertRaisesRegex(dep.Error, "mixed provider layouts"):
+            dep.api_check(dict(entries, **{"lib/elaborated_project.mli": entries[grouped["elaborated_project"]]}))
+        # Flat Project spellings do not satisfy a grouped provider, and vice versa.
+        with self.assertRaisesRegex(dep.Error, "Project.emit_bundle"):
+            dep.api_check(dict(entries, **{"lib/project.mli": ("100644", PROJECT_API.encode())}))
+        with self.assertRaisesRegex(dep.Error, "Project.emit_bundle"):
+            dep.project_api_check(GROUPED_PROJECT_API.encode())
+        for stage, error in (("old-api", "installed public API incompatible: elaboration/resolved.mli"),
+                             ("old-bundle-api", "Bundle publication API"), ("old-project-api", "Project"),
+                             ("mixed-install", "mixed provider layouts")):
+            with self.subTest(stage=stage):
+                self.failure = stage
+                with self.assertRaisesRegex(dep.Error, error):
+                    self.refresh()
+                self.assertEqual((self.store / "current").resolve(), Path(first["generation"]))
 
     def test_source_cli_owner_must_be_an_actual_native_stanza(self):
         entries = dep.development(self.source, self.store)

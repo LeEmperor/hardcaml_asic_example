@@ -156,14 +156,25 @@ def development(source, store):
     return entries
 
 
-def project_api_check(data):
+# Type spellings inside project.mli for each provider layout (see SOURCE_LAYOUTS).
+PROJECT_TYPE_NAMES = {
+    "flat": {"inputs": r"Target\.Inputs\.t", "resolved": r"Flow\.Catalog\.resolved", "bundle": r"Bundle"},
+    "grouped": {"inputs": r"Platform\.Target\.Inputs\.t",
+                "resolved": r"Hardcaml_asic_flow_domain\.Catalog\.resolved", "bundle": r"Elaboration\.Bundle"},
+}
+
+
+def project_api_check(data, layout="flat"):
     text = re.sub(r"\s+", "", re.sub(r"\(\*.*?\*\)", "", data.decode(), flags=re.S))
+    names = PROJECT_TYPE_NAMES[layout]
+    common = r"\?inputs:{inputs}->\?methodology:{resolved}->\?include_simulation:bool->t->source_root:string->".format(**names)
     signatures = {
         "create": r"valcreate:(?:(?!val).)*?\?source_inputs:stringlist(?:(?!val).)*?->unit->tOr_error\.t",
         "source_inputs": r"valsource_inputs:t->stringlist",
         "describe": r"valdescribe:t->Sexp\.t",
-        "emit_bundle": r"valemit_bundle:\?inputs:Target\.Inputs\.t->\?methodology:Flow\.Catalog\.resolved->\?include_simulation:bool->t->source_root:string->output_dir:string->Bundle\.tOr_error\.t",
-        "emit_bundle_to_store": r"valemit_bundle_to_store:\?inputs:Target\.Inputs\.t->\?methodology:Flow\.Catalog\.resolved->\?include_simulation:bool->t->source_root:string->store_dir:string->\(Bundle\.t\*Bundle\.Publication\.t\)Or_error\.t",
+        "emit_bundle": r"valemit_bundle:" + common + r"output_dir:string->{bundle}\.tOr_error\.t".format(**names),
+        "emit_bundle_to_store": r"valemit_bundle_to_store:" + common
+            + r"store_dir:string->\({bundle}\.t\*{bundle}\.Publication\.t\)Or_error\.t".format(**names),
     }
     for name, signature in signatures.items():
         if not re.search(signature, text):
@@ -171,35 +182,82 @@ def project_api_check(data):
                         "(--mode development) and re-activate current/activate.sh until the owner updates the pin")
 
 
+# Provider interface locations: "flat" before the namespace reorganization (ad290d8),
+# "grouped" after it. One layout is chosen per check and every file comes from it.
+SOURCE_LAYOUTS = {
+    "flat": {"elaborated_project": "lib/elaborated_project.mli", "resolved": "lib/resolved_flow.mli",
+             "bundle": "lib/bundle.mli", "project": "lib/project.mli",
+             "catalog": "lib/flow/catalog.mli", "profile": "lib/flow/profile.mli",
+             "methodology": "lib/flow/methodology.mli", "selection": "lib/flow/selection.mli",
+             "parameter": "lib/flow/parameter.mli", "flow_spec": "lib/flow_spec.mli",
+             "methodology_plan": "lib/methodology_plan.mli"},
+    "grouped": {"elaborated_project": "lib/elaboration/elaborated_project.mli",
+                "resolved": "lib/elaboration/resolved.mli", "bundle": "lib/elaboration/bundle.mli",
+                "project": "lib/project.mli",
+                "catalog": "flow_domain/catalog.mli", "profile": "flow_domain/profile.mli",
+                "methodology": "flow_domain/methodology.mli", "selection": "flow_domain/selection.mli",
+                "parameter": "flow_domain/parameter.mli", "flow_spec": "lib/flow/spec.mli",
+                "methodology_plan": "lib/methodology_plan.mli"},
+}
+INSTALL_LAYOUTS = {
+    "flat": {"elaborated_project": "elaborated_project.mli", "resolved": "resolved_flow.mli",
+             "bundle": "bundle.mli", "project": "project.mli",
+             "catalog": "flow_domain/catalog.mli", "profile": "flow_domain/profile.mli",
+             "methodology": "flow_domain/methodology.mli", "selection": "flow_domain/selection.mli",
+             "parameter": "flow_domain/parameter.mli", "flow_spec": "flow_spec.mli",
+             "methodology_plan": "methodology_plan.mli"},
+    "grouped": {"elaborated_project": "elaboration/elaborated_project.mli",
+                "resolved": "elaboration/resolved.mli", "bundle": "elaboration/bundle.mli",
+                "project": "project.mli",
+                "catalog": "flow_domain/catalog.mli", "profile": "flow_domain/profile.mli",
+                "methodology": "flow_domain/methodology.mli", "selection": "flow_domain/selection.mli",
+                "parameter": "flow_domain/parameter.mli", "flow_spec": "flow/spec.mli",
+                "methodology_plan": "methodology_plan.mli"},
+}
+
+
+def select_layout(layouts, exists, message):
+    # The elaborated_project interface marks the layout; both or neither present is refused.
+    found = [name for name, paths in layouts.items() if exists(paths["elaborated_project"])]
+    if len(found) != 1:
+        candidates = " or ".join(paths["elaborated_project"] for paths in layouts.values())
+        raise Error(f"{message}: {'mixed provider layouts' if found else 'missing/incompatible'} {candidates}")
+    return found[0]
+
+
 def api_check(entries):
-    required = {"dune-project": b"hardcaml_asic", "lib/elaborated_project.mli": b"type t",
-                "lib/resolved_flow.mli": b"elaborated_project : Elaborated_project.t",
-                "lib/bundle.mli": b"?simulation_project:",
+    layout = select_layout(SOURCE_LAYOUTS, entries.__contains__,
+                           "expected hardcaml_asic source with renamed public API")
+    paths = SOURCE_LAYOUTS[layout]
+    required = {"dune-project": b"hardcaml_asic", paths["elaborated_project"]: b"type t",
+                paths["resolved"]: b"elaborated_project : Elaborated_project.t",
+                paths["bundle"]: b"?simulation_project:",
                 "bin/dune": b"(public_name hardcaml-asic-flow)"}
     for name, token in required.items():
         if name not in entries or token not in entries[name][1]:
             raise Error(f"expected hardcaml_asic source with renamed public API: missing/incompatible {name}")
-    project_api_check(entries.get("lib/project.mli", (None, b""))[1])
+    project_api_check(entries.get(paths["project"], (None, b""))[1], layout)
     native_dune = re.sub(r";[^\n]*", "", entries["bin/dune"][1].decode())
     if not re.search(r"\(executable\s+\(name flow_cli\)(?:(?!\(executable).)*?\(public_name hardcaml-asic-flow\)", native_dune, re.S):
         raise Error("expected native flow_cli executable owning hardcaml-asic-flow in bin/dune")
-    bundle_api_check(entries["lib/bundle.mli"][1])
-    catalog_api_check({name: data for name, (_, data) in entries.items()})
+    bundle_api_check(entries[paths["bundle"]][1])
+    catalog_api_check({name: data for name, (_, data) in entries.items()}, paths)
 
 
-def catalog_api_check(files):
+def catalog_api_check(files, paths):
     # Source-only gate; compilation of PROBE checks the precise installed types.
     required = {
-        "lib/flow/catalog.mli": ("val create", "val resolve", "val declaration"),
-        "lib/flow/profile.mli": ("val create", "val assignments"),
-        "lib/flow/methodology.mli": ("Librelane_classic_v1", "val create"),
-        "lib/flow/selection.mli": ("val create", "val default"),
-        "lib/flow/parameter.mli": ("val of_scalar", "val check_assignments"),
-        "lib/flow_spec.mli": ("val list_to_yojson", "val describe_to_yojson"),
-        "lib/methodology_plan.mli": ("module Prepared", "val prepare", "?catalog_inputs:string list",
-                                     "?expected_plan_identity:string", "val plan_identity", "val to_string"),
+        "catalog": ("val create", "val resolve", "val declaration"),
+        "profile": ("val create", "val assignments"),
+        "methodology": ("Librelane_classic_v1", "val create"),
+        "selection": ("val create", "val default"),
+        "parameter": ("val of_scalar", "val check_assignments"),
+        "flow_spec": ("val list_to_yojson", "val describe_to_yojson"),
+        "methodology_plan": ("module Prepared", "val prepare", "?catalog_inputs:string list",
+                             "?expected_plan_identity:string", "val plan_identity", "val to_string"),
     }
-    for name, tokens in required.items():
+    for role, tokens in required.items():
+        name = paths[role]
         text = re.sub(r"\(\*.*?\*\)", "", files.get(name, b"").decode(), flags=re.S)
         text = re.sub(r"\s+", " ", text)
         if any(token not in text for token in tokens):
@@ -343,7 +401,10 @@ export {variable}
 
 def validate_install(generation, work, runner):
     package = generation / "lib/hardcaml_asic"
-    for relative in ("META", "dune-package", "elaborated_project.mli", "resolved_flow.mli", "bundle.mli", "project.mli",
+    layout = select_layout(INSTALL_LAYOUTS, lambda name: (package / name).is_file(), "incomplete installation")
+    paths = INSTALL_LAYOUTS[layout]
+    for relative in ("META", "dune-package", paths["elaborated_project"], paths["resolved"], paths["bundle"],
+                     paths["project"],
                      "flow/hardcaml_asic_flow/__init__.py",
                      "flow/hardcaml_asic_flow/backend_protocol.py",
                      "flow/hardcaml_asic_flow/librelane_bridge.py",
@@ -358,14 +419,14 @@ def validate_install(generation, work, runner):
                      "flow/hardcaml_asic_flow/data/toolchain.sh", "flow/hardcaml_asic_flow/data/version.txt"):
         if not (package / relative).is_file():
             raise Error(f"incomplete installation: {relative}")
-    for name, token in (("elaborated_project.mli", "type t"),
-                        ("resolved_flow.mli", "elaborated_project : Elaborated_project.t"),
-                        ("bundle.mli", "?simulation_project:")):
+    for name, token in ((paths["elaborated_project"], "type t"),
+                        (paths["resolved"], "elaborated_project : Elaborated_project.t"),
+                        (paths["bundle"], "?simulation_project:")):
         if token not in (package / name).read_text():
             raise Error(f"installed public API incompatible: {name}")
-    project_api_check((package / "project.mli").read_bytes())
-    catalog_api_check({"lib/" + str(p.relative_to(package)).replace("flow_domain/", "flow/", 1): p.read_bytes()
-                       for p in package.rglob("*.mli")})
+    project_api_check((package / paths["project"]).read_bytes(), layout)
+    catalog_api_check({name: (package / name).read_bytes() for name in paths.values() if (package / name).is_file()},
+                      paths)
     for name in ("hardcaml-asic-flow", *("hardcaml-asic-experimental-" + suffix for suffix in (
             "execute", "archive", "finalization", "finalization-inspect", "postcheck",
             "report", "collect", "run", "preflight", "observation-read", "stages",
@@ -375,7 +436,7 @@ def validate_install(generation, work, runner):
             raise Error(f"incomplete native installation: {name}")
         if executable.read_bytes()[:4] != b"\x7fELF":
             raise Error(f"expected native executable: {name}")
-    bundle_api_check((package / "bundle.mli").read_bytes())
+    bundle_api_check((package / paths["bundle"]).read_bytes())
     for path in generation.rglob("*"):
         if path.is_symlink() and not path.resolve(strict=True).is_relative_to(generation):
             raise Error(f"installed symlink escapes immutable generation: {path}")
