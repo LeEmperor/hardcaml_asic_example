@@ -22,6 +22,14 @@ ASIC library. ASIC integration lives in `asic/`, `bin/`, `asic_test/`, and
 simulation and resolution need no PDK, Workbench, or physical EDA. The emitter
 only renders/writes a bundle; it never provisions dependencies or runs a flow.
 
+Authored flow definitions are **project-owned**. This example currently registers
+one flow, `standard`, in `asic/flow_catalog.ml`, with `balanced` and `synth_delay`
+profiles in `asic/flow_profiles.ml`. The preferred future organization for several
+definitions is a per-project `asic/flows/` directory with explicit catalog
+registration. `hardcaml_asic` owns the types/execution machinery and may later
+supply reusable standard presets. See the
+[ownership, source layout and generated storage decision](../hardcaml_asic/docs/development/project-flow-catalog.md#per-project-source-layout-and-library-presets).
+
 ## Fixed core contract
 
 For the standalone standard-library public-protocol client, frozen-prefix build,
