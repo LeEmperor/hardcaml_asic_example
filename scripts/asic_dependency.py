@@ -26,14 +26,32 @@ let render = Bundle.render ?simulation_project:None
 let create = Project.create ?source_inputs:(Some ([] : string list))
 let source_inputs : Project.t -> string list = Project.source_inputs
 let describe : Project.t -> Core.Sexp.t = Project.describe
-let emit_bundle : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> Project.t
+let emit_bundle : ?inputs:Target.Inputs.t -> ?methodology:Flow.Catalog.resolved -> ?include_simulation:bool -> Project.t
   -> source_root:string -> output_dir:string -> Bundle.t Core.Or_error.t = Project.emit_bundle
-let emit_store : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> Project.t
+let emit_store : ?inputs:Target.Inputs.t -> ?methodology:Flow.Catalog.resolved -> ?include_simulation:bool -> Project.t
   -> source_root:string -> store_dir:string -> (Bundle.t * Bundle.Publication.t) Core.Or_error.t = Project.emit_bundle_to_store
 let publish : Bundle.t -> store_dir:string -> Bundle.Publication.t Core.Or_error.t = Bundle.publish
 let publication (p : Bundle.Publication.t) = p.directory, p.reused
+let catalog = Flow.Catalog.create
+let profiles = Flow.Profile.create
+let methodology = Flow.Methodology.create
+let selection = Flow.Selection.create
+let parameter = Flow.Parameter.of_scalar
+let list : Flow.Catalog.t -> Yojson.Safe.t = Flow_spec.list_to_yojson
+let describe_flow : Flow.Catalog.Entry.t -> Yojson.Safe.t = Flow_spec.describe_to_yojson
+let prepare : ?inputs:Target.Inputs.t -> ?selection:Flow.Selection.t
+  -> ?request:Flow.Parameter.assignment list -> ?include_simulation:bool
+  -> ?catalog_inputs:string list -> ?expected_plan_identity:string
+  -> catalog:Flow.Catalog.t -> endpoint:Flow.Stage.t -> Project.t -> source_root:string
+  -> Methodology_plan.Prepared.t Core.Or_error.t = Methodology_plan.prepare
+let prepared (p : Methodology_plan.Prepared.t) =
+  Methodology_plan.Prepared.bundle p, Methodology_plan.Prepared.plan p
+let plan (p : Methodology_plan.t) = Methodology_plan.to_yojson p,
+  Methodology_plan.to_string p, Methodology_plan.plan_identity p
 let () = ignore project; ignore render; ignore create; ignore source_inputs;
   ignore describe; ignore emit_bundle; ignore emit_store; ignore publish; ignore publication
+  ; ignore catalog; ignore profiles; ignore methodology; ignore selection; ignore parameter
+  ; ignore list; ignore describe_flow; ignore prepare; ignore prepared; ignore plan
 """
 
 
@@ -144,8 +162,8 @@ def project_api_check(data):
         "create": r"valcreate:(?:(?!val).)*?\?source_inputs:stringlist(?:(?!val).)*?->unit->tOr_error\.t",
         "source_inputs": r"valsource_inputs:t->stringlist",
         "describe": r"valdescribe:t->Sexp\.t",
-        "emit_bundle": r"valemit_bundle:\?inputs:Target\.Inputs\.t->\?include_simulation:bool->t->source_root:string->output_dir:string->Bundle\.tOr_error\.t",
-        "emit_bundle_to_store": r"valemit_bundle_to_store:\?inputs:Target\.Inputs\.t->\?include_simulation:bool->t->source_root:string->store_dir:string->\(Bundle\.t\*Bundle\.Publication\.t\)Or_error\.t",
+        "emit_bundle": r"valemit_bundle:\?inputs:Target\.Inputs\.t->\?methodology:Flow\.Catalog\.resolved->\?include_simulation:bool->t->source_root:string->output_dir:string->Bundle\.tOr_error\.t",
+        "emit_bundle_to_store": r"valemit_bundle_to_store:\?inputs:Target\.Inputs\.t->\?methodology:Flow\.Catalog\.resolved->\?include_simulation:bool->t->source_root:string->store_dir:string->\(Bundle\.t\*Bundle\.Publication\.t\)Or_error\.t",
     }
     for name, signature in signatures.items():
         if not re.search(signature, text):
@@ -166,6 +184,48 @@ def api_check(entries):
     if not re.search(r"\(executable\s+\(name flow_cli\)(?:(?!\(executable).)*?\(public_name hardcaml-asic-flow\)", native_dune, re.S):
         raise Error("expected native flow_cli executable owning hardcaml-asic-flow in bin/dune")
     bundle_api_check(entries["lib/bundle.mli"][1])
+    catalog_api_check({name: data for name, (_, data) in entries.items()})
+
+
+def catalog_api_check(files):
+    # Source-only gate; compilation of PROBE checks the precise installed types.
+    required = {
+        "lib/flow/catalog.mli": ("val create", "val resolve", "val declaration"),
+        "lib/flow/profile.mli": ("val create", "val assignments"),
+        "lib/flow/methodology.mli": ("Librelane_classic_v1", "val create"),
+        "lib/flow/selection.mli": ("val create", "val default"),
+        "lib/flow/parameter.mli": ("val of_scalar", "val check_assignments"),
+        "lib/flow_spec.mli": ("val list_to_yojson", "val describe_to_yojson"),
+        "lib/methodology_plan.mli": ("module Prepared", "val prepare", "?catalog_inputs:string list",
+                                     "?expected_plan_identity:string", "val plan_identity", "val to_string"),
+    }
+    for name, tokens in required.items():
+        text = re.sub(r"\(\*.*?\*\)", "", files.get(name, b"").decode(), flags=re.S)
+        text = re.sub(r"\s+", " ", text)
+        if any(token not in text for token in tokens):
+            raise Error(f"incompatible catalog/plan API: {name}; use explicit development refresh")
+
+
+def namedflow_check(metadata):
+    contract = metadata.get("cli_contract", {}) if isinstance(metadata, dict) else {}
+    caps = contract.get("capabilities", {}) if isinstance(contract, dict) else {}
+    if (not isinstance(contract, dict) or type(contract.get("version")) is not int or contract["version"] != 4
+            or not isinstance(caps, dict) or caps.get("namedflow1") is not True):
+        raise Error("installed named-flow provider requires exact CLI4 + namedflow1=true")
+
+
+def provider_metadata(data):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Error(f"duplicate provider metadata field: {key}")
+            result[key] = value
+        return result
+    try:
+        return json.loads(data, object_pairs_hook=unique)
+    except ValueError as exc:
+        raise Error("malformed provider metadata") from exc
 
 
 def bundle_api_check(data):
@@ -304,6 +364,8 @@ def validate_install(generation, work, runner):
         if token not in (package / name).read_text():
             raise Error(f"installed public API incompatible: {name}")
     project_api_check((package / "project.mli").read_bytes())
+    catalog_api_check({"lib/" + str(p.relative_to(package)).replace("flow_domain/", "flow/", 1): p.read_bytes()
+                       for p in package.rglob("*.mli")})
     for name in ("hardcaml-asic-flow", *("hardcaml-asic-experimental-" + suffix for suffix in (
             "execute", "archive", "finalization", "finalization-inspect", "postcheck",
             "report", "collect", "run", "preflight", "observation-read", "stages",
@@ -335,10 +397,8 @@ def validate_install(generation, work, runner):
     (consumer / "probe.ml").write_text(PROBE)
     runner(["dune", "build", "-j", "20", "--root", str(consumer), "probe.exe"], cwd=consumer, env=env)
     runner([str(generation / "bin/hardcaml-asic-flow"), "--help"], env=env)
-    metadata = json.loads(runner([str(generation / "bin/hardcaml-asic-flow"), "--version", "--json"], env=env))
-    version = metadata.get("cli_contract", {}).get("version")
-    if type(version) is not int or version not in (2, 3, 4):
-        raise Error("installed provider requires supported CLI contract 2, 3 or 4")
+    metadata = provider_metadata(runner([str(generation / "bin/hardcaml-asic-flow"), "--version", "--json"], env=env))
+    namedflow_check(metadata)
 
 
 def refresh(source, mode, store, record, runner=run, remove_source_build_override=False):

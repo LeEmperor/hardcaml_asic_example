@@ -60,7 +60,9 @@ source /home/wayne/devel/jane/hardcaml_asic_example/.dev/asic/current/activate.s
 ```
 
 Current provider interface is CLI contract 4 (package version remains 0.1.0,
-persisted records retain their versions). Setup/project dispatch accepts exactly
+persisted records retain their versions). The installer now requires CLI4 plus
+the exact boolean `cli_contract.capabilities.namedflow1=true`, along with the
+checked catalog, Flow_spec and Methodology_plan APIs. Legacy project dispatch accepts
 integer contracts 2, 3 or 4, not arbitrary future versions. The consumer's
 `run --endpoint` requires contract 4 before emission; Classic `--stage` retains
 its existing behavior on all three. Machine callers must request `--json`;
@@ -69,6 +71,77 @@ its existing behavior on all three. Machine callers must request `--json`;
 queries and inspectors return complete single objects. See the
 [ordinary run quickstart](../README.md#explicit-stage-run-and-independent-progress-reader)
 and [slice-3 evidence](../../hardcaml_asic/docs/development/flow-journal.md).
+
+## Named-flow consumer validation
+
+The 2026-10-15 consumer-only slice uses a disposable installed-provider capture at
+`/tmp/opencode/consumer-namedflow-provider`. It was copied with symlinks dereferenced
+from the already-built current provider install tree. No provider source/build was
+changed, no normal consumer selection was refreshed, and the recorded pin was not
+updated. For this capture, use explicit environment selection rather than normal
+activation:
+
+```sh
+PREFIX=/tmp/opencode/consumer-namedflow-provider
+export OCAMLPATH="$PREFIX/lib${OCAMLPATH:+:$OCAMLPATH}"
+export PATH="$PREFIX/bin:$PATH"
+ocamlfind query hardcaml_asic
+"$PREFIX/bin/hardcaml-asic-flow" --version --json
+dune build -j20 @all
+HARDCAML_ASIC_TEST_PROVIDER="$PREFIX/bin/hardcaml-asic-flow" dune runtest -j20 .
+```
+
+To retain the native fixture's preview, raw JSONL, stderr, launchspec, bundle and
+native observation/operation receipts, run the routing tests directly after build:
+
+```sh
+HARDCAML_ASIC_TEST_PROVIDER="$PREFIX/bin/hardcaml-asic-flow" \
+HARDCAML_ASIC_TEST_EVIDENCE="$PWD/.dev/flow-catalog-checks" \
+python3 -B scripts/test_project_routing.py \
+  _build/default/bin/project.exe _build/default/acceptance/export_trace.exe "$PWD"
+```
+
+It prints the newly allocated `native-namedflow-*` directory, preserving absolute
+snapshot/reference paths. `preview.json` is the versioned plan,
+`native.stdout.jsonl` is unchanged native output; the `project/_flow_results/`
+subtree retains `launchspecs/`, `bundles/`, `observations/` and
+`stage-preflight/operations/`.
+
+Verified retained fixture: `.dev/flow-catalog-checks/native-namedflow-6_gl5xg6/`.
+Its `preview.json` has plan identity
+`2d4b26f5c0a98e9bf34a96b7f716a25e71d83cff8b5dfe85cd5191b0bbd887a3`;
+the native stream is `ed478c8f932a4a5797854aca45fe47a7`. Allocation links the pending
+snapshot, terminal failure retains the checked reference with SHA-256, and operation
+`20261015T005329678798Z_a837080c/operation.json` retains that same reference and
+explicit tool roots. The intended fixture failure is collateral revision mismatch,
+exit 2, before workspace creation or EDA. All 20 routing tests passed, alongside
+20 installer tests, the new catalog test and the existing consumer suites.
+
+Run these sequentially. The explicit test-provider variable enables the installed
+native public-CLI fixture: empty temporary collateral and `/bin/false` prevent any
+EDA, while the fixture verifies allocation, checked retained snapshot and native
+request receipt on the expected readiness failure. Recording-provider fixtures
+verify complete fresh dispatch arguments, exact launchspec and bundle association,
+unmodified JSONL, exits/signals and lexical executable paths with spaces/symlinks.
+Other tests cover pure discovery with empty PATH/invalid Git, profile settings and
+different identities with equal generated RTL/SDC, strict overrides/defaults,
+stale source/catalog/profile/endpoint/Git context with no output or dispatcher,
+capability rejection before publication, and existing legacy commands.
+
+`scripts/asic_dependency.py` now checks current additive Project signatures and
+catalog/plan source interfaces; its installed compiler and independent Dune link
+probe use the actual public prepare, prepared bundle/plan, discovery and identity
+APIs. Normal development refresh remains an explicit separate action using the
+commands at the top of this file; a recorded provider without these APIs is
+rejected rather than changing the pin or falling back to source.
+
+For manual selection/preview/run commands see
+[project-owned named flows](../README.md#project-owned-named-flows-discover-preview-then-run).
+Both plan and run require `--endpoint`. Plan stdout is the provider's versioned v1
+plan; run requires its `plan_identity` and matching selection/overrides, then uses
+the public native `--methodology-plan` launch route. The native early snapshot
+links and request receipts are the progress/evidence boundary for a later headless
+client; no independent headless client is introduced in this slice.
 
 Contract-4 activation verified 2026-10-13: generation
 `f4c4ae2efeec4e34951102587149f4bc`, captured snapshot SHA256

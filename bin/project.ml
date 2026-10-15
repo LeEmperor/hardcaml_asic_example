@@ -2,7 +2,7 @@ module U = Unix
 open! Core
 open Hardcaml_asic
 
-let usage = "Usage: project describe | emit | preflight | run [OPTIONS]"
+let usage = "Usage: project describe | emit | preflight | run [OPTIONS]\n       project flow list | describe | plan | run [OPTIONS]"
 let bad message = raise (Stdlib.Arg.Bad (message ^ "\n" ^ usage))
 (* Executable paths must retain symlink-parent/.. traversal and venv aliases. *)
 let anchor_executable path =
@@ -62,6 +62,170 @@ let discover () =
       if String.equal parent path then bad "No project root found; use --project-root or --source-root"
       else up parent
   in up cwd
+;;
+
+let find_provider explicit =
+  match explicit with
+  | Some path -> anchor_executable path
+  | None ->
+    let paths = String.split (Option.value (Sys.getenv "PATH") ~default:"") ~on:':' in
+    (match List.find_map paths ~f:(fun dir ->
+       let path = anchor_executable (Filename.concat (if String.is_empty dir then "." else dir) "hardcaml-asic-flow") in
+       try U.access path [U.X_OK]; if is_file path then Some path else None with _ -> None) with
+     | Some path -> path
+     | None -> failwith "hardcaml-asic-flow is not on PATH; install/activate a compatible provider (CLI contract 2, 3 or 4).")
+;;
+
+let check_named_provider provider =
+  let channel = U.open_process_args_in provider [| provider; "--version"; "--json" |] in
+  let metadata = Exn.protect ~f:(fun () -> Yojson.Safe.from_channel channel)
+    ~finally:(fun () -> match U.close_process_in channel with
+      | U.WEXITED 0 -> () | _ -> failwith "Provider metadata failed; CLI4 + namedflow1 required") in
+  (* Exact scalar types and unique fields, never truthiness or version coercion. *)
+  let field key = function
+    | `Assoc fields ->
+      (match List.filter fields ~f:(fun (k, _) -> String.equal k key) with
+       | [ (_, value) ] -> value
+       | _ -> failwith "Malformed provider metadata; CLI4 + namedflow1 required")
+    | _ -> failwith "Malformed provider metadata; CLI4 + namedflow1 required"
+  in
+  let contract = field "cli_contract" metadata in
+  match field "version" contract, field "namedflow1" (field "capabilities" contract) with
+  | `Int 4, `Bool true -> ()
+  | _ -> failwith "Named flows require exact CLI4 + namedflow1=true; refresh a compatible provider"
+;;
+
+let immutable_plan_file path contents =
+  (* Atomic no-replace visibility; this is the launch input, not an attempt receipt. *)
+  let temporary = path ^ ".pending" in
+  let fd = U.openfile temporary [ U.O_WRONLY; U.O_CREAT; U.O_EXCL ] 0o600 in
+  let channel = U.out_channel_of_descr fd in
+  Exn.protect ~f:(fun () ->
+    Out_channel.output_string channel contents;
+    Out_channel.close channel;
+    U.chmod temporary 0o444;
+    U.link temporary path)
+    ~finally:(fun () -> Out_channel.close_no_err channel; U.unlink temporary)
+;;
+
+let flow_main command args =
+  let json = ref false and verbose = ref false in
+  let flow = ref None and profile = ref None and endpoint = ref None and expected = ref None in
+  let source = ref None and root = ref None and results = ref None and provider = ref None in
+  let tools = ref None and support = ref None and pdk = ref None and python = ref None in
+  let timeout = ref None in
+  let request = ref [] in
+  let checked value = match value with Ok value -> value | Error error -> bad (Error.to_string_hum error) in
+  let opt name dest help = name, Stdlib.Arg.String (fun s ->
+    if String.is_empty s || String.is_prefix s ~prefix:"--" then bad (name ^ " requires a value");
+    if Option.is_some !dest then bad ("Duplicate option " ^ name);
+    dest := Some s), help in
+  let set text =
+    match String.lsplit2 text ~on:'=' with
+    | None -> bad "--set requires KEY=VALUE"
+    | Some (key, value) ->
+      let key_type = Flow.Parameter.Key.of_string key |> checked |> Flow.Parameter.descriptor
+        |> Flow.Parameter.value_type in
+      let assignment = match key_type with
+        | Enum -> Flow.Parameter.of_string_value ~key value |> checked
+        | Boolean ->
+          let scalar = try Yojson.Safe.from_string value with _ -> bad "--set boolean requires a JSON boolean scalar" in
+          let scalar = match scalar with
+            | `Bool b -> `Bool b
+            | `Int n -> `Int n
+            | `Float f -> `Float f
+            | `Null -> `Null
+            | `String s -> `String s
+            | _ -> bad "--set requires a scalar" in
+          Flow.Parameter.of_scalar ~key scalar |> checked
+      in
+      request := assignment :: !request
+  in
+  let common = [ "--json", Stdlib.Arg.Set json, " Versioned JSON output"
+               ; "--verbose", Stdlib.Arg.Set verbose, " Diagnostics on stderr" ] in
+  let selection = [ opt "--flow" flow "ID Flow ID"; opt "--profile" profile "ID Profile ID" ] in
+  let preparation = selection @
+    [ opt "--endpoint" endpoint "STAGE Required complete fresh prefix endpoint"
+    ; "--set", Stdlib.Arg.String set, "KEY=VALUE Typed supported parameter override (repeatable)"
+    ; opt "--source-root" source "PATH Source checkout"
+    ; opt "--project-root" root "PATH Source checkout alias" ] in
+  let options = common @ (match command with
+    | "list" -> []
+    | "describe" -> [ opt "--flow" flow "ID Required flow ID" ]
+    | "plan" -> preparation
+    | "run" -> preparation @
+      [ opt "--expected-plan-identity" expected "HASH Required preview identity"
+      ; opt "--provider" provider "PATH Installed native provider executable"
+      ; opt "--results-root" results "PATH Results store"
+      ; opt "--toolchain" tools "PATH Tool root"
+      ; opt "--support-tools" support "PATH Support tools"
+       ; opt "--pdk-root" pdk "PATH PDK"
+       ; "--timeout", Stdlib.Arg.String (fun s ->
+           if Option.is_some !timeout then bad "Duplicate option --timeout";
+           let seconds = try Int.of_string s with _ -> bad "--timeout requires positive integer seconds" in
+           if seconds <= 0 then bad "--timeout requires positive integer seconds";
+           timeout := Some (Int.to_string seconds)), "SECONDS Positive integer per segment/publication budget (provider default 600)"
+       ; opt "--python" python "PATH Flow interpreter" ]
+    | _ -> bad "Unknown flow subcommand") in
+  Stdlib.Arg.parse_argv ~current:(ref 0) (Array.of_list (("project flow " ^ command) :: args))
+    options (fun arg -> bad ("Unexpected argument: " ^ arg)) usage;
+  let catalog = Fifo_asic.Flow_catalog.create () |> checked in
+  let print value = printf "%s\n%!" (if !json then Yojson.Safe.to_string value else Yojson.Safe.pretty_to_string value) in
+  match command with
+  | "list" -> print (Flow_spec.list_to_yojson catalog)
+  | "describe" ->
+    let id = Option.value_or_thunk !flow ~default:(fun () -> bad "flow describe requires --flow ID") in
+    let id = Flow.Selection.Id.create id |> checked in
+    let entry = List.find (Flow.Catalog.entries catalog) ~f:(fun entry ->
+      String.equal (Flow.Selection.Id.to_string id)
+        (Flow.Selection.Id.to_string (Flow.Methodology.id (Flow.Catalog.Entry.methodology entry))))
+      |> Option.value_or_thunk ~default:(fun () -> bad "Unknown flow ID") in
+    print (Flow_spec.describe_to_yojson entry)
+  | _ ->
+    let selection = Flow.Selection.create ?flow:!flow ?profile:!profile () |> checked in
+    let endpoint = Option.value_or_thunk !endpoint ~default:(fun () -> bad "flow plan/run requires --endpoint")
+      |> Flow.Stage.of_string |> checked in
+    let request = Flow.Parameter.check_assignments ~configurable:Flow.Parameter.Key.all !request |> checked in
+    if String.equal command "run" then (
+      let identity = Option.value_or_thunk !expected ~default:(fun () -> bad "flow run requires --expected-plan-identity from flow plan") in
+      if String.length identity <> 64 || not (String.for_all identity ~f:(function '0'..'9' | 'a'..'f' -> true | _ -> false))
+      then bad "--expected-plan-identity requires a lowercase SHA-256");
+    let explicit = match !root, !source with
+      | Some a, Some b when not (String.equal (U.realpath (absolute a)) (U.realpath (absolute b))) -> bad "Conflicting --project-root and --source-root"
+      | Some a, _ | _, Some a -> Some (absolute a) | _ -> None in
+    let source_root = Option.value_or_thunk explicit ~default:discover in
+    let project = Fifo_asic.project () |> Or_error.ok_exn in
+    if Option.is_none explicit then List.iter (Project.source_inputs project) ~f:(fun input ->
+      let path = Filename.concat source_root input in
+      if not (is_file path) || not (String.is_prefix (U.realpath path) ~prefix:(source_root ^ "/"))
+      then bad ("Discovered root lacks expected source input: " ^ input));
+    let prepared = Methodology_plan.prepare ~catalog ~selection ~request ~endpoint
+      ~catalog_inputs:Fifo_asic.Flow_catalog.source_inputs ?expected_plan_identity:!expected
+      project ~source_root |> Or_error.ok_exn in
+    let plan = Methodology_plan.Prepared.plan prepared in
+    if String.equal command "plan" then print (Methodology_plan.to_yojson plan)
+    else (
+      let provider = find_provider !provider in
+      check_named_provider provider;
+      let results = Option.value_map !results ~default:(Filename.concat source_root "_flow_results") ~f:absolute in
+      let publication = Bundle.publish (Methodology_plan.Prepared.bundle prepared)
+        ~store_dir:(Filename.concat results "bundles") |> Or_error.ok_exn in
+      let workspace = new_workspace results (Flow.Stage.to_string endpoint) in
+      let launchspecs = Filename.concat results "launchspecs" in
+      mkdir_p launchspecs;
+      let planfile = Filename.concat launchspecs (Filename.basename workspace ^ ".json") in
+      immutable_plan_file planfile (Methodology_plan.to_string plan);
+      let toolchain = Option.first_some !tools (Sys.getenv "TOOLCHAIN" |> Option.filter ~f:(fun s -> not (String.is_empty s)))
+        |> Option.value_map ~default:(Filename.concat source_root "_flow_tools") ~f:absolute in
+      let resolved override suffix = Option.value_map override ~default:(Filename.concat toolchain suffix) ~f:absolute in
+      let argv = [ "stages"; publication.directory; "--methodology-plan"; planfile
+        ; "--expected-plan-identity"; Methodology_plan.plan_identity plan
+        ; "--workspace"; workspace; "--checkpoint-store"; Filename.concat workspace "checkpoints"
+        ; "--support-tools"; resolved !support "tt"; "--pdk-root"; resolved !pdk "pdk"
+        ; "--python"; Option.value_map !python ~default:(Filename.concat toolchain ".venv/bin/python") ~f:anchor_executable ]
+        @ Option.value_map !timeout ~default:[] ~f:(fun s -> [ "--timeout"; s ])
+        @ (if !json then [ "--json" ] else []) @ (if !verbose then [ "--verbose" ] else []) in
+      U.execv provider (Array.of_list (provider :: argv)))
 ;;
 
 let main command args =
@@ -172,6 +336,8 @@ let () =
    Stdlib.Random.self_init ();
   try match Sys.get_argv () |> Array.to_list with
     | [_; ("--help" | "-help")] -> printf "%s\n%!" usage
+    | _ :: "flow" :: command :: args -> flow_main command args
+    | [ _; "flow" ] -> bad "A flow subcommand is required"
     | _ :: command :: args -> main command args
     | _ -> bad "A subcommand is required"
   with

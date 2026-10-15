@@ -15,7 +15,17 @@
 
 (rule
  (alias runtest)
- (deps test_project_routing.py (source_tree ../lib) (source_tree ../asic)
+ (deps test_project_routing.py (env_var HARDCAML_ASIC_TEST_PROVIDER)
+       (env_var HARDCAML_ASIC_TEST_EVIDENCE) (source_tree ../lib) (source_tree ../asic)
        ../dune-project ../asic-dependency.json ../README.md ../bin/dune ../bin/project.ml)
  (action (run python3 %{dep:test_project_routing.py} %{exe:../bin/project.exe}
+               %{exe:../acceptance/export_trace.exe} ..)))
+
+(rule
+ (alias headless-test)
+  (deps headless_flow.py test_headless_flow.py test_project_routing.py
+        (env_var HARDCAML_ASIC_TEST_PROVIDER) (env_var HARDCAML_ASIC_ENGINE_FIXTURES)
+        (source_tree ../lib) (source_tree ../asic)
+       ../dune-project ../asic-dependency.json ../README.md ../bin/dune ../bin/project.ml)
+ (action (run python3 -B %{dep:test_headless_flow.py} %{exe:../bin/project.exe}
               %{exe:../acceptance/export_trace.exe} ..)))

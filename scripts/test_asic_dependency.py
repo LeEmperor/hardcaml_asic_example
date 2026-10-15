@@ -15,13 +15,22 @@ PROJECT_API = """type t
 val create : name:string -> ?source_inputs:string list -> policy:Resource_policy.t -> unit -> t Or_error.t
 val source_inputs : t -> string list
 val describe : t -> Sexp.t
-val emit_bundle : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> t -> source_root:string -> output_dir:string -> Bundle.t Or_error.t
-val emit_bundle_to_store : ?inputs:Target.Inputs.t -> ?include_simulation:bool -> t -> source_root:string -> store_dir:string -> (Bundle.t * Bundle.Publication.t) Or_error.t
+val emit_bundle : ?inputs:Target.Inputs.t -> ?methodology:Flow.Catalog.resolved -> ?include_simulation:bool -> t -> source_root:string -> output_dir:string -> Bundle.t Or_error.t
+val emit_bundle_to_store : ?inputs:Target.Inputs.t -> ?methodology:Flow.Catalog.resolved -> ?include_simulation:bool -> t -> source_root:string -> store_dir:string -> (Bundle.t * Bundle.Publication.t) Or_error.t
 """
 BUNDLE_API = """val render : ?simulation_project:Elaborated_project.t -> unit
 module Publication : sig type t = private { directory : string; reused : bool } end
 val publish : t -> store_dir:string -> Publication.t Or_error.t
 """
+CATALOG_APIS = {
+    "lib/flow/catalog.mli": "val create : unit val resolve : unit val declaration : unit",
+    "lib/flow/profile.mli": "val create : unit val assignments : unit",
+    "lib/flow/methodology.mli": "type t = Librelane_classic_v1 val create : unit",
+    "lib/flow/selection.mli": "val create : unit val default : unit",
+    "lib/flow/parameter.mli": "val of_scalar : unit val check_assignments : unit",
+    "lib/flow_spec.mli": "val list_to_yojson : unit val describe_to_yojson : unit",
+    "lib/methodology_plan.mli": "module Prepared : sig end val prepare : ?catalog_inputs:string list -> ?expected_plan_identity:string -> unit val plan_identity : unit val to_string : unit",
+}
 
 
 class SetupTests(unittest.TestCase):
@@ -34,6 +43,7 @@ class SetupTests(unittest.TestCase):
         self.store = self.root / "private store's prefix"
         self.calls = []
         files = {
+            **CATALOG_APIS,
             "dune-project": "(lang dune 3.17)\n(name hardcaml_asic)\n",
             "lib/elaborated_project.mli": "type t\n",
             "lib/resolved_flow.mli": "type t = private { elaborated_project : Elaborated_project.t }\n",
@@ -69,7 +79,8 @@ class SetupTests(unittest.TestCase):
                            revision=fixture_git("rev-parse", "HEAD").decode().strip())
         self.failure = None
         self.mutate = False
-        self.contract = 2
+        self.contract = 4
+        self.capability = True
 
     def runner(self, argv, *, cwd=None, env=None):
         self.calls.append(argv)
@@ -108,8 +119,10 @@ class SetupTests(unittest.TestCase):
                 target = package / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text("stub installed bytes")
-            for name in ("elaborated_project.mli", "resolved_flow.mli", "bundle.mli", "project.mli"):
-                (package / name).write_bytes((self.snapshot / "lib" / name).read_bytes())
+            for source in (self.snapshot / "lib").rglob("*.mli"):
+                target = package / str(source.relative_to(self.snapshot / "lib")).replace('flow/', 'flow_domain/', 1)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
             if self.failure == "old-api":
                 (package / "resolved_flow.mli").write_text("old API")
             if self.failure == "old-project-api":
@@ -156,7 +169,8 @@ class SetupTests(unittest.TestCase):
                           "Project.emit_bundle_to_store", "Bundle.publish", "p.directory", "p.reused"):
                 self.assertIn(token, dep.PROBE)
         if "--version" in argv:
-            return json.dumps({"cli_contract": {"version": 1 if self.failure == "old-cli" else self.contract}}).encode()
+            return json.dumps({"cli_contract": {"version": 1 if self.failure == "old-cli" else self.contract,
+                                               "capabilities": {"namedflow1": self.capability}}}).encode()
         return b""
 
     def refresh(self, mode="recorded"):
@@ -216,16 +230,35 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(self.snapshot.is_relative_to(self.store))
 
     def test_supported_cli_contracts_only_and_refusal_preserves_selection(self):
-        for version in (2, 3, 4):
-            self.contract = version
-            selected = self.refresh()
-        for version in (1, 5, None, "4", True, 4.0):
+        selected = self.refresh()
+        for version in (1, 2, 3, 5, None, "4", True, 4.0):
             with self.subTest(version=version):
                 self.contract = version
-                with self.assertRaisesRegex(dep.Error, "supported CLI contract 2, 3 or 4"):
+                with self.assertRaisesRegex(dep.Error, "CLI4.*namedflow1"):
                     self.refresh()
                 self.assertEqual((self.store / "current").resolve(), Path(selected["generation"]))
                 self.assertEqual(json.loads((self.store / "current/receipt.json").read_text()), selected)
+        self.contract = 4
+        for value in (False, None, 1, "true", {}, []):
+            self.capability = value
+            with self.subTest(capability=value), self.assertRaisesRegex(dep.Error, "namedflow1"):
+                self.refresh()
+            self.assertEqual((self.store / "current").resolve(), Path(selected["generation"]))
+
+    def test_catalog_surface_required_before_build(self):
+        entries = dep.development(self.source, self.store)
+        dep.api_check(entries)
+        for name in CATALOG_APIS:
+            with self.subTest(name=name), self.assertRaisesRegex(dep.Error, "catalog/plan API"):
+                dep.api_check({k: v for k, v in entries.items() if k != name})
+        for metadata in ({}, [], {"cli_contract": []}, {"cli_contract": {"version": 4}},
+                         {"cli_contract": {"version": 4, "capabilities": []}}):
+            with self.subTest(metadata=metadata), self.assertRaises(dep.Error):
+                dep.namedflow_check(metadata)
+        for data in ('not JSON', '{"cli_contract":{},"cli_contract":{}}',
+                     '{"cli_contract":{"version":4,"capabilities":{"namedflow1":true,"namedflow1":true}}}'):
+            with self.subTest(data=data), self.assertRaises(dep.Error):
+                dep.provider_metadata(data)
 
     def test_missing_revision_api_and_wrong_source(self):
         first = self.refresh()
@@ -267,7 +300,7 @@ class SetupTests(unittest.TestCase):
         dep.project_api_check(PROJECT_API.encode())
         for token in ("?source_inputs:string list", "val source_inputs", "val describe", "val emit_bundle",
                       "val emit_bundle_to_store", "store_dir:string", "Bundle.Publication.t",
-                      "?inputs:Target.Inputs.t", "?include_simulation:bool", "output_dir:string"):
+                       "?inputs:Target.Inputs.t", "?methodology:Flow.Catalog.resolved", "?include_simulation:bool", "output_dir:string"):
             with self.subTest(token=token), self.assertRaises(dep.Error):
                 dep.project_api_check(PROJECT_API.replace(token, "obsolete").encode())
 

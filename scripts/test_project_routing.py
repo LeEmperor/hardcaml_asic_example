@@ -1,4 +1,5 @@
 """Actual consumer executable, synthetic provenance and recording provider; no EDA."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,8 +17,16 @@ sys.argv[1:] = []
 
 class RoutingTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="fifo-routing-")
-        self.addCleanup(self.tmp.cleanup)
+        evidence = os.environ.get('HARDCAML_ASIC_TEST_EVIDENCE')
+        self.retain = bool(evidence and self._testMethodName in (
+            'test_named_installed_native_early_reference_and_request',
+            'test_native_prepared_synthesis_report_and_allocation_only_reconnect'))
+        if self.retain:
+            Path(evidence).mkdir(parents=True, exist_ok=True)
+            self.tmp = tempfile.TemporaryDirectory(prefix="native-namedflow-", dir=evidence, delete=False)
+        else:
+            self.tmp = tempfile.TemporaryDirectory(prefix="fifo-routing-")
+            self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.root = self.base / "project"
         self.root.mkdir()
@@ -47,10 +56,15 @@ class RoutingTests(unittest.TestCase):
         self.providers = self.base / "providers"
         self.providers.mkdir()
         self.log = self.base / "calls.jsonl"
+        self.versions = self.base / "versions.jsonl"
         provider = self.providers / "hardcaml-asic-flow"
         provider.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 if '--version' in sys.argv:
-    print(json.dumps({'cli_contract': {'version': json.loads(os.environ.get('CONTRACT', '2'))}}))
+    if os.environ.get('VERSION_RECORD'):
+        with open(os.environ['VERSION_RECORD'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')
+    print(os.environ.get('METADATA', json.dumps({'cli_contract': {
+        'version': json.loads(os.environ.get('CONTRACT', '2')),
+        'capabilities': {'namedflow1': json.loads(os.environ.get('NAMEDFLOW', 'true'))}}})))
 else:
     with open(os.environ['RECORD'], 'a') as f:
         f.write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'executable': sys.argv[0]}) + '\\n')
@@ -67,7 +81,8 @@ else:
     sys.exit(int(os.environ.get('PROVIDER_EXIT', '0')))
 ''')
         provider.chmod(0o755)
-        self.env.update(PATH=str(self.providers) + os.pathsep + self.env.get("PATH", ""), RECORD=str(self.log))
+        self.env.update(PATH=str(self.providers) + os.pathsep + self.env.get("PATH", ""),
+                        RECORD=str(self.log), VERSION_RECORD=str(self.versions))
 
     def invoke(self, *args, cwd=None, status=0, env=None):
         result = subprocess.run([str(EXE), *args], cwd=cwd or self.nested, env=env or self.env,
@@ -266,6 +281,217 @@ else:
         self.invoke('run', '--stage', 'synthesis', '--bundle', 'unused',
                     env=dict(self.env, PROVIDER_SIGNAL=str(signal.SIGTERM)), status=-signal.SIGTERM)
         self.assertFalse((self.root / '_flow_results').exists())
+
+    def preview(self, *args):
+        explicit = ['--project-root', str(self.root)] if self.retain else []
+        return json.loads(self.invoke('flow', 'plan', '--endpoint', 'synthesis', '--json', *explicit, *args).stdout)
+
+    def named_run(self, plan, *args, **kwargs):
+        explicit = ['--project-root', str(self.root)] if self.retain else []
+        return self.invoke('flow', 'run', '--endpoint', 'synthesis', '--expected-plan-identity',
+                           plan['plan_identity'], *explicit, *args, **kwargs)
+
+    def test_named_profiles_and_pure_preview(self):
+        plan = self.preview()
+        delay = self.preview('--flow', 'standard', '--profile', 'synth_delay')
+        default = self.preview('--flow', 'standard')
+        self.assertEqual(plan, default)
+        self.assertEqual(plan['contract'], 'hardcaml-asic.methodology-plan')
+        self.assertEqual(plan['schema_version'], 1)
+        self.assertNotEqual(plan['plan_identity'], delay['plan_identity'])
+        self.assertNotEqual(plan['bundle_identity'], delay['bundle_identity'])
+        for p, strategy in ((plan, 'AREA 0'), (delay, 'DELAY 1')):
+            config = json.loads(p['configuration_bytes'])
+            self.assertEqual(config['SYNTH_STRATEGY'], strategy)
+            self.assertIs(config['SYNTH_ABC_BUFFERING'], False)
+            self.assertIn('effective_parameters', p['methodology'])
+            self.assertIn('snapshot', p['methodology'])
+            manifest = json.loads(p['bundle_manifest'])
+            # Every declaration file comes from the Project inventory used by export_trace.
+            for name in ('asic/flow_catalog.ml', 'asic/flow_catalog.mli',
+                         'asic/flow_profiles.ml', 'asic/flow_profiles.mli'):
+                self.assertIn(name, json.dumps(manifest))
+        self.assertFalse((self.root / '_flow_results').exists())
+        self.assertFalse(self.log.exists())
+        self.assertFalse(self.versions.exists())
+        self.named_run(plan, '--json', env=dict(self.env, CONTRACT='4'))
+        area_bundle = Path(self.call()['argv'][1])
+        self.named_run(delay, '--flow', 'standard', '--profile', 'synth_delay', '--json',
+                       env=dict(self.env, CONTRACT='4'))
+        delay_bundle = Path(self.call()['argv'][1])
+        generated = [p.relative_to(area_bundle) for p in area_bundle.rglob('*')
+                     if p.is_file() and p.suffix in ('.v', '.sdc')]
+        self.assertTrue(generated)
+        self.assertTrue(any(p.suffix == '.sdc' for p in generated))
+        for path in generated:
+            self.assertEqual((area_bundle / path).read_bytes(), (delay_bundle / path).read_bytes(), path)
+
+    def test_named_typed_request_and_invalid_parameters(self):
+        baseline = self.preview()
+        buffering = self.preview('--set', 'SYNTH_ABC_BUFFERING=true')
+        self.assertIs(json.loads(buffering['configuration_bytes'])['SYNTH_ABC_BUFFERING'], True)
+        self.assertNotEqual(baseline['plan_identity'], buffering['plan_identity'])
+        strategy = self.preview('--set', 'SYNTH_STRATEGY=DELAY 1')
+        self.assertEqual(json.loads(strategy['configuration_bytes'])['SYNTH_STRATEGY'], 'DELAY 1')
+        for args in [('--set', 'SYNTH_BUFFERING=true'), ('--set', 'UNKNOWN=hello'),
+                     ('--set', 'SYNTH_STRATEGY=AREA0'), ('--set', 'SYNTH_STRATEGY=area 0'),
+                     ('--set', 'SYNTH_STRATEGY=AREA 0 '), ('--set', 'SYNTH_STRATEGY=true'),
+                     ('--set', 'SYNTH_ABC_BUFFERING=1'), ('--set', 'SYNTH_ABC_BUFFERING="true"'),
+                     ('--set', 'SYNTH_ABC_BUFFERING=True'), ('--set', 'SYNTH_ABC_BUFFERING=null'),
+                     ('--set', 'SYNTH_ABC_BUFFERING=[]'), ('--set', 'SYNTH_ABC_BUFFERING'),
+                     ('--set', 'SYNTH_ABC_BUFFERING=true', '--set', 'SYNTH_ABC_BUFFERING=false'),
+                     ('--flow', 'standard', '--flow', 'standard')]:
+            with self.subTest(args=args):
+                self.invoke('flow', 'plan', '--endpoint', 'synthesis', *args, status=2)
+        for args in [('--flow', 'missing'), ('--flow', 'standard', '--profile', 'missing')]:
+            self.invoke('flow', 'plan', '--endpoint', 'synthesis', *args, status=1)
+        self.assertFalse((self.root / '_flow_results').exists())
+        self.assertFalse(self.log.exists())
+
+    def test_named_stale_source_catalog_profile_and_endpoint_no_output(self):
+        plan = self.preview()
+        for args in [('--flow', 'standard', '--profile', 'synth_delay'),
+                     ('--set', 'SYNTH_ABC_BUFFERING=true')]:
+            self.named_run(plan, *args, status=1)
+        self.invoke('flow', 'run', '--endpoint', 'floorplan', '--expected-plan-identity',
+                    plan['plan_identity'], status=1)
+        for name in ('README.md', 'asic/flow_profiles.ml', 'asic/flow_catalog.ml'):
+            path = self.root / name
+            before = path.read_bytes()
+            path.write_bytes(before + b'\n(* source changed *)\n')
+            self.named_run(plan, status=1)
+            path.write_bytes(before)
+        # Git-only context also belongs to the concrete bundle/plan identity.
+        subprocess.check_call(['git', '-C', str(self.root), '-c', 'core.hooksPath=/dev/null',
+                               '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'new context'],
+                              env=self.env, stdout=subprocess.DEVNULL)
+        self.named_run(plan, status=1)
+        self.assertFalse((self.root / '_flow_results').exists())
+        self.assertFalse(self.log.exists())
+        self.assertFalse(self.versions.exists())  # No capability query/lookup before stale rejection.
+
+    def test_named_capability_negotiation_before_publication(self):
+        plan = self.preview()
+        for version in ('2', '3', '5', 'null', 'true', '"4"', '4.0'):
+            self.named_run(plan, '--timeout', '3600', env=dict(self.env, CONTRACT=version), status=1)
+        for capability in ('false', 'null', '1', '"true"', '{}', '[]'):
+            self.named_run(plan, env=dict(self.env, CONTRACT='4', NAMEDFLOW=capability), status=1)
+        for metadata in ('{}', '[]', 'null', 'garbage', '{"cli_contract":{"version":4}}',
+                         '{"cli_contract":{"version":4,"version":4,"capabilities":{"namedflow1":true}}}',
+                         '{"cli_contract":{"version":4,"capabilities":{"namedflow1":true,"namedflow1":true}}}'):
+            self.named_run(plan, env=dict(self.env, METADATA=metadata), status=1)
+        self.assertFalse((self.root / '_flow_results').exists())
+        self.assertFalse(self.log.exists())
+
+    def test_named_timeout_validation_and_runtime_identity(self):
+        for values in [[], ['0'], ['-1'], ['nan'], ['inf'], ['-inf'], ['1.5'], ['oops'],
+                       ['3600', '--timeout', '7200']]:
+            self.invoke('flow', 'run', '--timeout', *values, status=2)
+        for command in ('list', 'describe', 'plan'):
+            self.invoke('flow', command, '--timeout', '3600', status=2)
+        for command in ('describe', 'emit', 'preflight', 'run'):
+            self.invoke(command, '--timeout', '3600', status=2)
+        self.assertFalse(self.versions.exists())
+        self.assertFalse((self.root / '_flow_results').exists())
+        plan = self.preview()
+        for budget in (None, '3600', '7200'):
+            options = [] if budget is None else ['--timeout', budget]
+            self.named_run(plan, *options, '--json', env=dict(self.env, CONTRACT='4'))
+            argv = self.call()['argv']
+            if budget is None:
+                self.assertNotIn('--timeout', argv)
+            else:
+                self.assertEqual(argv[argv.index('--timeout') + 1], budget)
+            launchspec = Path(argv[argv.index('--methodology-plan') + 1])
+            self.assertEqual(json.loads(launchspec.read_text()), plan)
+            self.assertEqual(self.preview(), plan)
+
+    def test_named_public_routing_launchspec_paths_and_process(self):
+        plan = self.preview()
+        real = self.base / 'real provider parent'
+        (real / 'child').mkdir(parents=True)
+        (self.outside / 'alias').symlink_to(real / 'child', target_is_directory=True)
+        provider = real / 'provider with spaces'
+        shutil.copyfile(self.providers / 'hardcaml-asic-flow', provider)
+        provider.chmod(0o755)
+        alias = str(self.outside / 'alias/../provider with spaces')
+        env = dict(self.env, CONTRACT='4', PROVIDER_EXIT='37')
+        result = self.named_run(plan, '--provider', alias, '--toolchain', 'explicit tools',
+                               '--support-tools', 'support tools', '--pdk-root', 'pdk root',
+                               '--python', 'alias/../venv python', '--results-root', 'result store',
+                               '--project-root', str(self.root), '--timeout', '3600', '--json', '--verbose',
+                               cwd=self.outside, env=env, status=37)
+        self.assertEqual([json.loads(line) for line in result.stdout.splitlines()],
+                         [{'event': 'observation_allocated', 'recorded': True},
+                          {'execution': 'complete', 'recorded': True}])
+        call = self.call()
+        self.assertEqual(call['executable'], alias)
+        argv = call['argv']
+        value = lambda flag: argv[argv.index(flag) + 1]
+        self.assertEqual(argv[0], 'stages')
+        self.assertEqual(value('--expected-plan-identity'), plan['plan_identity'])
+        self.assertEqual(value('--timeout'), '3600')
+        self.assertEqual(value('--python'), str(self.outside / 'alias/../venv python'))
+        self.assertEqual(value('--support-tools'), str(self.outside / 'support tools'))
+        self.assertEqual(value('--pdk-root'), str(self.outside / 'pdk root'))
+        workspace = Path(value('--workspace'))
+        self.assertEqual(workspace.parent, self.outside / 'result store')
+        self.assertFalse(workspace.exists())
+        self.assertEqual(value('--checkpoint-store'), str(workspace / 'checkpoints'))
+        for flag in ('--endpoint', '--plan', '--checkpoint', '--stage', '--toolchain'):
+            self.assertNotIn(flag, argv)
+        launchspec = Path(value('--methodology-plan'))
+        self.assertEqual(launchspec.parent, self.outside / 'result store/launchspecs')
+        self.assertEqual(json.loads(launchspec.read_text()), plan)
+        self.assertEqual(launchspec.stat().st_mode & 0o222, 0)
+        self.assertEqual(json.loads((Path(argv[1]) / 'manifest.json').read_text()),
+                         json.loads(plan['bundle_manifest']))
+        self.named_run(plan, '--json', env=dict(self.env, CONTRACT='4', PROVIDER_SIGNAL=str(signal.SIGTERM)),
+                       status=-signal.SIGTERM)
+        self.assertNotEqual(value('--workspace'), self.call()['argv'][self.call()['argv'].index('--workspace') + 1])
+
+    @unittest.skipUnless(os.environ.get('HARDCAML_ASIC_TEST_PROVIDER'), 'explicit installed native fixture provider')
+    def test_named_installed_native_early_reference_and_request(self):
+        plan = self.preview()
+        tools = self.base / 'fixture tools'
+        (tools / 'tt').mkdir(parents=True)
+        (tools / 'pdk').mkdir()
+        result = self.named_run(plan, '--provider', os.environ['HARDCAML_ASIC_TEST_PROVIDER'],
+                               '--toolchain', str(tools), '--python', '/bin/false', '--timeout', '3600', '--json', status=2)
+        if self.retain:
+            (self.base / 'preview.json').write_text(json.dumps(plan, indent=2) + '\n')
+            (self.base / 'native.stdout.jsonl').write_text(result.stdout)
+            (self.base / 'native.stderr.txt').write_text(result.stderr)
+            print(f'Retained native named-flow fixture: {self.base}')
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertGreaterEqual(len(events), 2)
+        self.assertEqual(events[0]['event'], 'observation_allocated')
+        # Native code owns the pending/checked snapshot and the exact request receipt.
+        self.assertIn('methodology', events[0])
+        self.assertEqual(events[0]['methodology']['state'], 'pending')
+        self.assertIsNone(events[0]['methodology']['reference'])
+        self.assertEqual(events[-1]['methodology']['state'], 'checked')
+        reference = events[-1]['methodology']['reference']
+        self.assertEqual(reference['attempt_id'], events[0]['stream_id'])
+        self.assertEqual(reference['snapshot_path'], events[0]['methodology']['snapshot_path'])
+        self.assertEqual(reference['expected_plan_identity'], plan['plan_identity'])
+        self.assertEqual(reference['plan_identity'], plan['plan_identity'])
+        snapshots = list((self.root / '_flow_results').rglob('methodology-plan.json'))
+        self.assertEqual(len(snapshots), 1, (events, result.stderr))
+        self.assertEqual(json.loads(snapshots[0].read_text()), plan)
+        self.assertEqual(str(snapshots[0]), reference['snapshot_path'])
+        self.assertEqual(hashlib.sha256(snapshots[0].read_bytes()).hexdigest(), reference['snapshot_sha256'])
+        self.assertFalse(self.log.exists())
+        receipts = list((self.root / '_flow_results').rglob('operation.json'))
+        self.assertEqual(len(receipts), 1)
+        receipt = json.loads(receipts[0].read_text())
+        self.assertIn('request', receipt)
+        self.assertIn('methodology', receipt['request'])
+        self.assertEqual(receipt['request']['methodology']['plan_identity'], plan['plan_identity'])
+        self.assertEqual(receipt['request']['methodology'], reference)
+        self.assertEqual(receipt['request']['support_tools'], str(tools / 'tt'))
+        self.assertEqual(receipt['request']['python'], '/bin/false')
+        self.assertFalse(Path(receipt['request']['workspace']).exists())
 
     def test_executable_paths_preserve_symlink_parent_traversal(self):
         real = self.base / 'real'

@@ -25,7 +25,7 @@ let pinout : Pinout.t =
 ;;
 
 let source_inputs =
-  [ "dune-project"
+  Flow_catalog.source_inputs @ [ "dune-project"
   ; "asic-dependency.json"
   ; "README.md"
   ; "lib/dune"

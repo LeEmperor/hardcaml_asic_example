@@ -7,10 +7,11 @@ bundle acceptance, and PDK-free Cyclesim and generated-Verilog tests. This is a
 It uses `core`, `hardcaml`, `ppx_jane`, `ppx_hardcaml`, `yojson`, and a selectable
 development build of `hardcaml_asic` exposing the hardened `Resolved_flow.mli` and
 the shared `Project.source_inputs`, `describe`, `emit_bundle`, and
-`emit_bundle_to_store` API, `Bundle.publish`, and flow CLI contract **4**.
-Consumer setup/Classic dispatch accepts exactly integer contracts **2, 3 or 4**;
-the explicit-stage `--endpoint` route requires **4**. Unknown versions fail before
-bundle emission. Older closeouts below describe historical installations.
+`emit_bundle_to_store` API, `Bundle.publish`, `Flow_spec`, `Methodology_plan.prepare`,
+and flow CLI contract **4** with **`namedflow1: true`** for named flows and installer
+validation. Legacy Classic dispatch accepts exactly integer contracts **2, 3 or 4**;
+the legacy explicit-stage `--endpoint` route requires **4**. Unknown versions fail
+before bundle emission. Older closeouts below describe historical installations.
 The project declares Dune language 3.17 and has been built with Dune 3.24.2 and
 OCaml 5.2.0+ox. The record is not an opam pin. The installed
 Hardcaml interfaces under `~/.opam/5.2.0+ox/lib/hardcaml/` are the API authority.
@@ -22,6 +23,10 @@ simulation and resolution need no PDK, Workbench, or physical EDA. The emitter
 only renders/writes a bundle; it never provisions dependencies or runs a flow.
 
 ## Fixed core contract
+
+For the standalone standard-library public-protocol client, frozen-prefix build,
+direct named-flow commands, reconnect and provider reference handoff, see
+[headless named flows](docs/headless_flow.md).
 
 `lib/controlled_fifo.mli` is the public contract; `Controlled_fifo.create` accepts
 a typed `Signal.t I.t` and returns a typed `Signal.t O.t`.
@@ -63,6 +68,94 @@ clears valid and holds response data; disabled edges also hold the entire queue.
 Consecutive pops may keep it high. `full` and `empty` depend only on occupancy.
 
 ## Build and run
+
+### Project-owned named flows: discover, preview, then run
+
+`asic/flow_catalog.{ml,mli}` and `asic/flow_profiles.{ml,mli}` are the checked,
+project-owned declarations, exported by `Fifo_asic.Flow_catalog` and
+`Fifo_asic.Flow_profiles`. Flow **`standard`** declares fresh LibreLane classic
+prefixes, default profile **`balanced`**, and two explicit profiles:
+
+| Profile | `SYNTH_STRATEGY` | `SYNTH_ABC_BUFFERING` |
+| --- | --- | --- |
+| `balanced` | `AREA 0` | `false` |
+| `synth_delay` | `DELAY 1` | `false` |
+
+```sh
+# Build with a compatible installed provider selected in OCAMLPATH.
+dune build -j20 bin/project.exe
+PROJECT="$PWD/_build/default/bin/project.exe"
+"$PROJECT" flow list --json
+"$PROJECT" flow describe --flow standard --json
+
+# Read-only preview: an endpoint is REQUIRED; this never defaults to signoff.
+"$PROJECT" flow plan --source-root "$PWD" --flow standard --profile synth_delay \
+  --endpoint synthesis --json > /tmp/fifo-plan.json
+IDENTITY=$(python3 -c 'import json; print(json.load(open("/tmp/fifo-plan.json"))["plan_identity"])')
+
+# Explicit implementation request, using existing provisioned tools:
+"$PROJECT" flow run --source-root "$PWD" --flow standard --profile synth_delay \
+  --endpoint synthesis --expected-plan-identity "$IDENTITY" \
+  --provider /absolute/installed/prefix/bin/hardcaml-asic-flow \
+  --toolchain "$PWD/_flow_tools" --json
+```
+
+Repeat exactly the preview's selection, endpoint, and `--set` arguments for run.
+Supported overrides are only `--set 'SYNTH_STRATEGY=DELAY 1'` and
+`--set SYNTH_ABC_BUFFERING=true` (or other exact provider enum/boolean values).
+The provider's typed `Parameter` API validates them; unknown keys, duplicates,
+noncanonical enums, string/numeric booleans and profile-without-flow fail.
+No selection uses the catalog's declared default pair; explicit `--flow standard`
+without a profile uses that flow's declared default. Unknown IDs never fall back.
+
+List/describe emit the versioned provider `hardcaml-asic.flow-list` /
+`hardcaml-asic.flow-describe` wires without root discovery, Git, provider lookup,
+elaboration or tools. Plan emits `hardcaml-asic.methodology-plan` v1 JSON (pretty
+by default, compact with `--json`), including the frozen declaration, effective
+settings and overridden provenance, exact configuration/manifest, bundle identity,
+methodology hash and plan identity. It reads source/Git but creates no output
+directories and performs no tool probes. All four declaration files are explicit
+`Project.source_inputs` and are also passed to prepare as `catalog_inputs`.
+
+Run calls `Methodology_plan.prepare` once, compares the required preview identity,
+then negotiates exact integer CLI4 plus boolean `capabilities.namedflow1=true`
+before publishing the **same prepared bundle**. Source, catalog, profile, request,
+endpoint or Git context changes invalidate the preview before results creation or
+provider dispatch. Run publishes a read-only, atomically no-replace plan launch file
+under `RESULTS/launchspecs/`, then execs public provider `stages BUNDLE
+--methodology-plan FILE --expected-plan-identity HASH` with explicit tool paths,
+a fresh nonexistent workspace and its checkpoint store. `--bundle` and
+`--checkpoint` are rejected. Results default to `SOURCE/_flow_results`; tool
+precedence is `--toolchain` > nonempty `TOOLCHAIN` > `SOURCE/_flow_tools`, with
+individual tool overrides. Relative paths retain caller-cwd semantics, executable
+symlinks, spaces and symlink-parent/`..` traversal. `--provider PATH` is recommended
+for configured clients; omission uses the human PATH fallback.
+
+Named `flow run` alone accepts optional `--timeout SECONDS`: positive integer
+seconds forwarded to public provider `stages --timeout`, per segment/publication.
+Omission retains the provider's native 600-second default. For a full fresh
+six-stage prefix, preview and run with `--endpoint signoff`, and use the recommended
+`--timeout 3600` on run. This execution budget is outside the plan content hash;
+changing it does not change profile, plan, bundle or snapshot identity within the
+same source checkout. Editing declared source inputs naturally changes identity.
+
+The [headless client](docs/headless_flow.md#client-and-reconnect) forwards optional
+`--stage-timeout 3600` to that project option. Its separate `--timeout 7200` is the
+recommended overall client budget for a full named flow; it is never forwarded.
+Both are explicit recommendations, not new defaults (client default also remains
+600 seconds). List/describe/plan and legacy project commands have no new option.
+
+With `--json`, stdout is **unchanged provider JSONL**, beginning with native
+allocation metadata linking the exact pending methodology snapshot. Retain that
+attempt/stream and later checked reference; native operation receipts retain the
+explicit request and immutable snapshot. The consumer adds no wrapper event or
+second progress protocol. Observe with the installed provider's `observation`
+commands below. A launchspec is launch input; the native retained snapshot is the
+historical evidence. Legacy `describe`, `emit`, `preflight`, `run --stage` and
+`run --endpoint` keep their existing routing and have no runtime profile state.
+
+PDK-free test commands and private installed-provider validation are in
+[dependency commands](docs/dependency_commands.md#named-flow-consumer-validation).
 
 ### Explicit-stage run and independent progress reader
 
