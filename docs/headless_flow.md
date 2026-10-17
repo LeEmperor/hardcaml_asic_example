@@ -63,6 +63,9 @@ edits to declared source files naturally change source identity.
 
 ## Client and reconnect
 
+For terminal physical metrics and optional external acceptance after this client
+finishes, see [terminal physical results](#terminal-physical-results-and-acceptance).
+
 ```sh
 python3 -B scripts/headless_flow.py \
   --project "$PROJECT" --provider "$PROVIDER" --source-root "$SOURCE" \
@@ -223,3 +226,103 @@ execution reference, completion and separate acceptance. These commands target
 synthesis; use the signoff examples and explicit stage/client budgets above for a
 full fresh six-stage named flow. The fixture checks establish native orchestration
 behavior, not physical acceptance.
+
+## Terminal physical results and acceptance
+
+Run these commands only in the shell responsible for builds and EDA. All paths
+below are isolated from the active Workbench config. The installed provider's
+public finalization route already supplies normalized terminal timing and
+physical checks; see the provider's
+[translation contract](../../hardcaml_asic/docs/development/workbench-terminal-contract.md).
+
+If a newly captured provider installation is needed, run from this checkout in
+the existing compiler environment:
+
+```sh
+SESSION=$(mktemp -d /tmp/opencode/workbench-physical-XXXXXX)
+python3 -B scripts/asic_dependency.py --store "$SESSION/provider-store" refresh \
+  --source /home/wayne/devel/jane/hardcaml_asic --mode development
+. "$SESSION/provider-store/current/activate.sh"
+PREFIX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' \
+  "$SESSION/provider-store/current/receipt.json")
+PROVIDER="$PREFIX/bin/hardcaml-asic-flow"
+BUILD="$SESSION/project-build"
+dune build --build-dir "$BUILD" -j20 bin/project.exe acceptance/export_trace.exe
+PROJECT="$BUILD/default/bin/project.exe"
+TOOLS="$PWD/_flow_tools"
+"$PROVIDER" --version --json > "$SESSION/provider-version.json"
+ocamlfind query hardcaml_asic
+```
+
+Refresh builds/installs/probes with `-j20` internally and publishes only this
+explicit store's selection. It installs no compiler dependencies and does not
+update the normal `.dev/asic/current` or `hardcaml-workbench-asic.sexp`. Set
+`SESSION`, `PROJECT`, `PROVIDER` and `TOOLS` explicitly instead if reusing already
+validated installed executables; no reinstall is needed solely to collect terminal
+physical metrics. Source captures are local receipts, not release stamps.
+
+Fresh physical execution has an explicit two-hour client deadline and a
+one-hour per-segment provider budget:
+
+```sh
+python3 -B scripts/headless_flow.py \
+  --project "$PROJECT" --provider "$PROVIDER" --source-root "$PWD" \
+  --results-root "$SESSION/results" --toolchain "$TOOLS" \
+  --python "$TOOLS/.venv/bin/python" --support-tools "$TOOLS/tt" --pdk-root "$TOOLS/pdk" \
+  --flow standard --profile balanced --endpoint signoff \
+  --stage-timeout 3600 --timeout 7200 --receipt "$SESSION/physical.json"
+EXECUTION=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["execution_completed"]; print(r["execution_file"])' \
+  "$SESSION/physical.json")
+"$PROVIDER" report "$EXECUTION" --json > "$SESSION/stage-report.json"
+```
+
+On timeout the client terminates/reaps its owned launcher. Reconnect with
+`python3 -B scripts/headless_flow.py --reconnect --timeout 120 --receipt
+"$SESSION/physical.json"` to inspect the returned allocation; reconnect does not
+relaunch or signal the run. An interrupted run is not eligible for finalization.
+For an already completed fresh signoff run, use its exact returned execution
+reference directly instead of running implementation again.
+
+Collect terminal results with a 30-minute outer deadline (GNU `timeout`):
+
+```sh
+timeout --signal=TERM --kill-after=30s 1800s \
+  "$PROVIDER" finalize "$EXECUTION" --operation-store "$SESSION/operations" \
+  --json > "$SESSION/finalization.jsonl" 2> "$SESSION/finalization.stderr"
+OPERATION=$(python3 -c 'import json,sys; rows=[json.loads(s) for s in open(sys.argv[1]) if s.strip()]; print(next(r["attempt"] for r in rows if r.get("event")=="allocated"))' \
+  "$SESSION/finalization.jsonl")
+"$PROVIDER" finalization-inspect "$OPERATION" --json > "$SESSION/operation.json"
+python3 -c 'import hashlib,json,pathlib,sys; r=json.load(open(sys.argv[1])); p=pathlib.Path(r["results"]["path"]); assert hashlib.sha256(p.read_bytes()).hexdigest()==r["results"]["sha256"]; print(p)' \
+  "$SESSION/operation.json"
+```
+
+Without `--accept`, acceptance remains `not_evaluated`. For full external
+acceptance, export the example replay trace, then invoke a separate bounded
+finalization operation with all required collateral:
+
+```sh
+"$BUILD/default/acceptance/export_trace.exe" > "$SESSION/replay-trace.txt"
+timeout --signal=TERM --kill-after=30s 1800s \
+  "$PROVIDER" finalize "$EXECUTION" --operation-store "$SESSION/acceptance-operations" \
+  --accept --support-tools "$TOOLS/tt" \
+  --precheck-python "$TOOLS/.venv-precheck/bin/python" \
+  --testbench "$PWD/acceptance/replay.v" --testbench-top replay \
+  --replay-trace "$SESSION/replay-trace.txt" --json \
+  > "$SESSION/acceptance.jsonl" 2> "$SESSION/acceptance.stderr"
+```
+
+Parse that operation's returned allocation and inspect it the same way. Preserve
+nonzero exits and inspect the allocated receipt even on timeout or acceptance
+failure. Collection results and acceptance are separate facts. Finalization has
+no public `--timeout` option; the outer deadline is deliberate. A forced kill
+can leave a `running` receipt unresolved, which must not be presented as completed.
+
+Focused provider regression commands, from the provider checkout, are:
+
+```sh
+dune build -j20 @test/ocaml-stage-report @test/ocaml-report @test/ocaml-finalization
+```
+
+These focused aliases exercise reporting and finalization fixtures. Broad
+`runtest` also includes tests that create and commit temporary Git repositories;
+select focused checks when the caller requires absolutely no mutative Git.

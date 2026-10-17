@@ -399,7 +399,7 @@ export {variable}
             + "unset _asic_rest _asic_out _asic_sep _asic_part _asic_more\n")
 
 
-def validate_install(generation, work, runner):
+def validate_install(generation, work, runner, jobs=20):
     package = generation / "lib/hardcaml_asic"
     layout = select_layout(INSTALL_LAYOUTS, lambda name: (package / name).is_file(), "incomplete installation")
     paths = INSTALL_LAYOUTS[layout]
@@ -456,13 +456,15 @@ def validate_install(generation, work, runner):
     (consumer / "dune-project").write_text("(lang dune 3.17)\n")
     (consumer / "dune").write_text("(executable (name probe) (libraries hardcaml_asic))\n")
     (consumer / "probe.ml").write_text(PROBE)
-    runner(["dune", "build", "-j", "20", "--root", str(consumer), "probe.exe"], cwd=consumer, env=env)
+    runner(["dune", "build", "-j", str(jobs), "--root", str(consumer), "probe.exe"], cwd=consumer, env=env)
     runner([str(generation / "bin/hardcaml-asic-flow"), "--help"], env=env)
     metadata = provider_metadata(runner([str(generation / "bin/hardcaml-asic-flow"), "--version", "--json"], env=env))
     namedflow_check(metadata)
 
 
-def refresh(source, mode, store, record, runner=run, remove_source_build_override=False):
+def refresh(source, mode, store, record, runner=run, remove_source_build_override=False, jobs=20):
+    if type(jobs) is not int or jobs <= 0:
+        raise Error("jobs must be a positive integer")
     source = source_check(source)
     if source == store or source.is_relative_to(store):
         raise Error("source cannot be inside the store")
@@ -488,12 +490,12 @@ def refresh(source, mode, store, record, runner=run, remove_source_build_overrid
             snapshot.mkdir()
             materialize(entries, snapshot)
             # -p implies --root .; cwd is the captured source, not the checkout.
-            runner(["dune", "build", "-j", "20", "--build-dir", "_build",
+            runner(["dune", "build", "-j", str(jobs), "--build-dir", "_build",
                     "-p", "hardcaml_asic", "@install"], cwd=snapshot)
-            runner(["dune", "install", "-j", "20", "--root", str(snapshot), "--prefix", str(generation),
+            runner(["dune", "install", "-j", str(jobs), "--root", str(snapshot), "--prefix", str(generation),
                     "--build-dir", "_build", "--libdir", str(generation / "lib"),
                     "hardcaml_asic"], cwd=snapshot)
-            validate_install(generation, work, runner)
+            validate_install(generation, work, runner, jobs=jobs)
         removed_paths = []
         if (store / "current").is_symlink():
             removed_paths = json.loads((store / "current/receipt.json").read_text()).get("removed_library_paths", [])
@@ -563,6 +565,8 @@ def main():
     refresh_parser = commands.add_parser("refresh")
     refresh_parser.add_argument("--source", type=Path, required=True)
     refresh_parser.add_argument("--mode", choices=("recorded", "development"), required=True)
+    refresh_parser.add_argument("--jobs", type=int, default=20,
+                                help="maximum Dune jobs for build, install and consumer probe (default: 20)")
     refresh_parser.add_argument("--remove-source-build-override", action="store_true",
                                 help="record removal of this source's _build/install/default/lib during activation")
     commands.add_parser("status").add_argument("--json", action="store_true")
@@ -582,7 +586,8 @@ def main():
         record = record_read(args.record)
         store = store_path(args.store)
         result = (refresh(args.source, args.mode, store, record,
-                          remove_source_build_override=args.remove_source_build_override) if args.command == "refresh"
+                          remove_source_build_override=args.remove_source_build_override,
+                          jobs=args.jobs) if args.command == "refresh"
                   else status(store, record))
         print(json.dumps(result, indent=2))
     except (Error, OSError, ValueError, RuntimeError) as exc:

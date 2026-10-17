@@ -491,5 +491,34 @@ class SetupTests(unittest.TestCase):
         self.assertIn(b"--mode", result.stderr)
 
 
+class JobsTests(unittest.TestCase):
+    """No Git repositories or compiler processes: exercise resource propagation."""
+
+    def test_bounded_jobs_reach_build_install_and_validation(self):
+        with tempfile.TemporaryDirectory(prefix="asic-jobs-") as temporary:
+            source = Path(temporary) / "source"
+            source.mkdir()
+            store = Path(temporary) / "store"
+            entries = {"dune-project": ("100644", b"(lang dune 3.17)\n")}
+            calls = []
+            with patch.object(dep, "source_check", return_value=source), \
+                 patch.object(dep, "committed", return_value=entries), \
+                 patch.object(dep, "git", return_value=b"a" * 40), \
+                 patch.object(dep, "development", return_value=entries), \
+                 patch.object(dep, "api_check"), patch.object(dep, "validate_install") as validate:
+                receipt = dep.refresh(source, "development", store, {"revision": "a" * 40},
+                                      runner=lambda argv, **kwargs: calls.append(argv), jobs=2)
+            self.assertEqual([argv[argv.index("-j") + 1] for argv in calls], ["2", "2"])
+            self.assertEqual(validate.call_args.kwargs["jobs"], 2)
+            self.assertEqual(str((store / "current").resolve()), receipt["generation"])
+
+    def test_invalid_jobs_fail_before_any_source_or_store_access(self):
+        for jobs in (0, -1, True, 1.5, "2"):
+            with patch.object(dep, "source_check") as source:
+                with self.assertRaisesRegex(dep.Error, "positive integer"):
+                    dep.refresh(None, None, None, None, jobs=jobs)
+                source.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
