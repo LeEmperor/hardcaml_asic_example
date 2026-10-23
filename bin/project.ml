@@ -251,7 +251,7 @@ let main command args =
     | "preflight" -> common @ roots @ routing @ [opt "--output" output "Exact report file"]
     | "run" -> common @ roots @ routing @
       [ "--stage", Stdlib.Arg.String (fun s -> stage := Some s), "synthesis|full Required implementation stage";
-         "--endpoint", Stdlib.Arg.String (fun s -> endpoint := Some s), "synthesis|floorplan|placement|cts|routing|signoff Explicit-stage endpoint (contract 4)";
+          "--endpoint", Stdlib.Arg.String (fun s -> endpoint := Some s), "synthesis|floorplan|placement|cts|routing|timing|signoff Explicit-stage endpoint (contract 4)";
          opt "--runs" runs "Classic run store override" ]
     | _ -> bad "Unknown command" in
   Stdlib.Arg.parse_argv ~current:(ref 0) (Array.of_list (("project " ^ command) :: args))
@@ -259,10 +259,10 @@ let main command args =
   if String.equal command "run" then
      (match !stage, !endpoint with
       | Some _, Some _ -> bad "--stage and --endpoint are mutually exclusive"
-      | None, Some ("synthesis" | "floorplan" | "placement" | "cts" | "routing" | "signoff") ->
+       | None, Some ("synthesis" | "floorplan" | "placement" | "cts" | "routing" | "timing" | "signoff") ->
         if !native || Option.is_some !runs then bad "--endpoint does not support Classic-only --native or --runs"
       | Some ("synthesis" | "full"), None -> ()
-      | _ -> bad "run requires --stage synthesis|full or --endpoint synthesis|floorplan|placement|cts|routing|signoff");
+       | _ -> bad "run requires --stage synthesis|full or --endpoint synthesis|floorplan|placement|cts|routing|timing|signoff");
   let explicit = match !root, !source with
     | Some a, Some b when not (String.equal (U.realpath (absolute a)) (U.realpath (absolute b))) -> bad "Conflicting --project-root and --source-root"
     | Some a, _ | _, Some a -> Some (absolute a) | _ -> None in

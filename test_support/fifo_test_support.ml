@@ -176,9 +176,9 @@ let directed () =
     done)
 ;;
 
-let regression ~seed ~cycles =
+let regression_with_seed_words ~seed_label ~seed_words ~cycles =
   if cycles < 0 then invalid_arg "cycles must be nonnegative";
-  let random = Stdlib.Random.State.make [| seed |] in
+  let random = Stdlib.Random.State.make seed_words in
   let chance n = Stdlib.Random.State.int random 100 < n in
   generate (fun emit occupancy ->
     for cycle = 0 to cycles - 1 do
@@ -194,7 +194,11 @@ let regression ~seed ~cycles =
       let clear = chance 1 in
       let enable = chance 90 in
       let push_data = Stdlib.Random.State.int random 256 in
-      emit (sprintf "seed=%d/random-cycle=%d" seed cycle)
+      emit (sprintf "seed=%s/random-cycle=%d" seed_label cycle)
         (Stimulus.create ~clear ~enable ~push ~pop ~push_data ())
     done)
+;;
+
+let regression ~seed ~cycles =
+  regression_with_seed_words ~seed_label:(Int.to_string seed) ~seed_words:[| seed |] ~cycles
 ;;

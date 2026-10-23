@@ -77,6 +77,17 @@ Consecutive pops may keep it high. `full` and `empty` depend only on occupancy.
 
 ## Build and run
 
+### Project-owned FIFO simulation (FS2)
+
+The standalone [FIFO simulation provider](simulation/README.md) exposes the real
+directed and seeded Cyclesim tests, native VCD/checker reports, full uint64 seeds,
+and an explicit checker-only mismatch mode. Only its native `test_provider.exe`
+adapter links the Workbench provider library; tests remain standalone. Its
+conservative installer explicitly builds the adapter and simulator at up to six
+jobs, copies those two executables into persistent `.dev/` storage,
+and adopts the separate Workbench simulation companion config. Discovery and
+runtime never build or run physical tools. Ordinary CLI/Dune tests remain available.
+
 ### Project-owned named flows: discover, preview, then run
 
 `asic/flow_catalog.{ml,mli}` and `asic/flow_profiles.{ml,mli}` are the checked,

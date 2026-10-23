@@ -67,3 +67,11 @@ val directed : unit -> Trace.t list
     drain and rejected-pop edge. Local PRNG, reproducible for a fixed toolchain.
     Traffic alternates fill/drain bias, with boundary requests and reset stalls. *)
 val regression : seed:int -> cycles:int -> Trace.t list
+
+(** Same traffic/checker semantics, with explicit PRNG seed words. FS2 maps a
+    canonical uint64 to four little-endian 16-bit words, preserving every bit. *)
+val regression_with_seed_words
+  :  seed_label:string
+  -> seed_words:int array
+  -> cycles:int
+  -> Trace.t list

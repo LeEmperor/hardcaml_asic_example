@@ -1,0 +1,1 @@
+(("schema_version" "1") ("provider_executable" "/home/wayne/devel/jane/hardcaml_asic_example/.dev/fifo-simulation/4158d5b458804b8a8428bc28862e5a49/test_provider.exe") ("provider_args" ()) ("discovery_timeout_seconds" "10") ("run_timeout_seconds" "120"))
