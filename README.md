@@ -1,5 +1,16 @@
 # Controlled FIFO ASIC specimen
 
+## Headless resource preparation (PT4)
+
+The project-owned CLI now exposes `prepare`, `preview`, and `resources`, backed
+directly by the public ASIC preparation APIs. See
+[resource preparation](docs/resource_preparation.md) for isolated installation,
+memory/FIFO commands, historical inspection and PDK/EDA-free acceptance.
+`prepare` allocates durable operation evidence; `preview` computes the current
+implementation preparation without publication; `resources` is a pure inventory
+view with explicit `--simulation` support. FIFO succeeds with zero registered
+resources. These are declaration/elaboration facts, not physical results.
+
 An independent Dune project containing a fixed Hardcaml FIFO core, a consumer-owned
 Tiny Tapeout wrapper, a shared Project declaration and CLI, repeatable
 bundle acceptance, and PDK-free Cyclesim and generated-Verilog tests. This is a
@@ -31,6 +42,23 @@ supply reusable standard presets. See the
 [ownership, source layout and generated storage decision](../hardcaml_asic/docs/development/project-flow-catalog.md#per-project-source-layout-and-library-presets).
 
 ## Fixed core contract
+
+The [registered 256×16 program-memory testbed](memory/README.md) is the ongoing
+production-style SRAM acceptance design. It uses public APIs with explicit
+flop/Exact selection, independent vendor-functional-model replay and deterministic
+bundle checks. The CLI requires `--operation synthesis|hardening` as well as explicit
+selection. Exact synthesis retains schema 1 and `(42,81)` R0; the new Hardening
+declaration uses the explicit `(40,81)` candidate with unchanged latency and staging
+registers. **P4 physical acceptance passed**: public full run, all-corner extracted
+timing/electrical checks, real-GDS/physical policy checks, abstract macro-boundary
+LVS with schematic CDL, external TT precheck and zero-delay final-gate replay.
+The stock SRAM and 16 staging flip-flops are unchanged. Timed SRAM/SDF conformance,
+internal-device LVS and IR/EM remain outside this accepted scope. See the
+[physical evidence and practical verification commands](memory/PHYSICAL.md) and
+[portable snapshot](acceptance/sram/README.md). Its emitted
+bundle route uses the installed public provider, isolated `.dev/asic-sram` dependencies
+and `_build_sram` builds at no more than six jobs. The FIFO commands below retain
+their existing entry point.
 
 For the standalone standard-library public-protocol client, frozen-prefix build,
 direct named-flow commands, reconnect and provider reference handoff, see
@@ -102,7 +130,7 @@ prefixes, default profile **`balanced`**, and two explicit profiles:
 
 ```sh
 # Build with a compatible installed provider selected in OCAMLPATH.
-dune build -j20 bin/project.exe
+dune build -j6 bin/project.exe
 PROJECT="$PWD/_build/default/bin/project.exe"
 "$PROJECT" flow list --json
 "$PROJECT" flow describe --flow standard --json
@@ -112,6 +140,11 @@ PROJECT="$PWD/_build/default/bin/project.exe"
   --endpoint synthesis --json > /tmp/fifo-plan.json
 IDENTITY=$(python3 -c 'import json; print(json.load(open("/tmp/fifo-plan.json"))["plan_identity"])')
 
+# EDA-less publication of this selected plan's bundle (no installed executable/tools needed):
+"$PROJECT" flow emit --source-root "$PWD" --flow standard --profile synth_delay \
+  --endpoint synthesis --expected-plan-identity "$IDENTITY" \
+  --results-root /tmp/fifo-emitted-results --json
+
 # Explicit implementation request, using existing provisioned tools:
 "$PROJECT" flow run --source-root "$PWD" --flow standard --profile synth_delay \
   --endpoint synthesis --expected-plan-identity "$IDENTITY" \
@@ -119,7 +152,7 @@ IDENTITY=$(python3 -c 'import json; print(json.load(open("/tmp/fifo-plan.json"))
   --toolchain "$PWD/_flow_tools" --json
 ```
 
-Repeat exactly the preview's selection, endpoint, and `--set` arguments for run.
+Repeat exactly the preview's selection, endpoint, and `--set` arguments for emit or run.
 Supported overrides are only `--set 'SYNTH_STRATEGY=DELAY 1'` and
 `--set SYNTH_ABC_BUFFERING=true` (or other exact provider enum/boolean values).
 The provider's typed `Parameter` API validates them; unknown keys, duplicates,
@@ -135,6 +168,36 @@ settings and overridden provenance, exact configuration/manifest, bundle identit
 methodology hash and plan identity. It reads source/Git but creates no output
 directories and performs no tool probes. All four declaration files are explicit
 `Project.source_inputs` and are also passed to prepare as `catalog_inputs`.
+
+`flow emit` calls `Methodology_plan.prepare` then `Bundle.publish`, retaining the
+selected flow/profile and all override provenance inside the returned plan. It accepts
+the same selection/root options as plan, plus `--results-root` (default
+`SOURCE/_flow_results`) and optional `--expected-plan-identity`. Invalid selections,
+overrides or identity mismatches fail before publication. It never checks or launches
+a provider/tool and allocates no workspace, launchspec or execution attempt.
+Provider/tool routing options are rejected; `TOOLCHAIN` is irrelevant.
+
+The output is one JSON object (pretty by default, compact with `--json`):
+
+```text
+{
+  "schema_version": 1,
+  "kind": "bundle_emission",
+  "bundle_identity": "<bundle SHA-256>",
+  "plan_identity": "<plan SHA-256>",
+  "output_dir": "<absolute RESULTS/bundles/IDENTITY path>",
+  "reused": false,
+  "plan": <Methodology_plan.to_yojson plan>
+}
+```
+
+The manifest is `output_dir/manifest.json`. Repeating an unchanged request returns
+the same plan, identities and output directory with `reused: true`.
+Focused EDA-less tests read this checkout's source/Git without mutating it:
+
+```sh
+python3 -B scripts/test_flow_emit.py "$PROJECT" "$PWD"
+```
 
 Run calls `Methodology_plan.prepare` once, compares the required preview identity,
 then negotiates exact integer CLI4 plus boolean `capabilities.namedflow1=true`

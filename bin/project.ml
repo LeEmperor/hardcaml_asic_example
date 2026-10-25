@@ -2,7 +2,7 @@ module U = Unix
 open! Core
 open Hardcaml_asic
 
-let usage = "Usage: project describe | emit | preflight | run [OPTIONS]\n       project flow list | describe | plan | run [OPTIONS]"
+let usage = "Usage: project describe | prepare | preview | resources | emit | preflight | run [OPTIONS]\n       project flow list | describe | plan | emit | run [OPTIONS]"
 let bad message = raise (Stdlib.Arg.Bad (message ^ "\n" ^ usage))
 (* Executable paths must retain symlink-parent/.. traversal and venv aliases. *)
 let anchor_executable path =
@@ -153,6 +153,9 @@ let flow_main command args =
     | "list" -> []
     | "describe" -> [ opt "--flow" flow "ID Required flow ID" ]
     | "plan" -> preparation
+    | "emit" -> preparation @
+      [ opt "--expected-plan-identity" expected "HASH Optional preview identity"
+      ; opt "--results-root" results "PATH Results store (default SOURCE/_flow_results)" ]
     | "run" -> preparation @
       [ opt "--expected-plan-identity" expected "HASH Required preview identity"
       ; opt "--provider" provider "PATH Installed native provider executable"
@@ -183,11 +186,12 @@ let flow_main command args =
     print (Flow_spec.describe_to_yojson entry)
   | _ ->
     let selection = Flow.Selection.create ?flow:!flow ?profile:!profile () |> checked in
-    let endpoint = Option.value_or_thunk !endpoint ~default:(fun () -> bad "flow plan/run requires --endpoint")
+     let endpoint = Option.value_or_thunk !endpoint ~default:(fun () -> bad "flow plan/emit/run requires --endpoint")
       |> Flow.Stage.of_string |> checked in
     let request = Flow.Parameter.check_assignments ~configurable:Flow.Parameter.Key.all !request |> checked in
-    if String.equal command "run" then (
-      let identity = Option.value_or_thunk !expected ~default:(fun () -> bad "flow run requires --expected-plan-identity from flow plan") in
+     if String.equal command "run" && Option.is_none !expected then
+       bad "flow run requires --expected-plan-identity from flow plan";
+     Option.iter !expected ~f:(fun identity ->
       if String.length identity <> 64 || not (String.for_all identity ~f:(function '0'..'9' | 'a'..'f' -> true | _ -> false))
       then bad "--expected-plan-identity requires a lowercase SHA-256");
     let explicit = match !root, !source with
@@ -202,9 +206,22 @@ let flow_main command args =
     let prepared = Methodology_plan.prepare ~catalog ~selection ~request ~endpoint
       ~catalog_inputs:Fifo_asic.Flow_catalog.source_inputs ?expected_plan_identity:!expected
       project ~source_root |> Or_error.ok_exn in
-    let plan = Methodology_plan.Prepared.plan prepared in
-    if String.equal command "plan" then print (Methodology_plan.to_yojson plan)
-    else (
+     let plan = Methodology_plan.Prepared.plan prepared in
+     if String.equal command "plan" then print (Methodology_plan.to_yojson plan)
+     else if String.equal command "emit" then (
+       let results = Option.value_map !results ~default:(Filename.concat source_root "_flow_results") ~f:absolute in
+       let bundle = Methodology_plan.Prepared.bundle prepared in
+       let publication = Bundle.publish bundle
+         ~store_dir:(Filename.concat results "bundles") |> Or_error.ok_exn in
+       print (`Assoc
+         [ "schema_version", `Int 1
+         ; "kind", `String "bundle_emission"
+         ; "bundle_identity", `String (Bundle.identity bundle)
+         ; "plan_identity", `String (Methodology_plan.plan_identity plan)
+         ; "output_dir", `String publication.directory
+         ; "reused", `Bool publication.reused
+         ; "plan", Methodology_plan.to_yojson plan ]))
+     else (
       let provider = find_provider !provider in
       check_named_provider provider;
       let results = Option.value_map !results ~default:(Filename.concat source_root "_flow_results") ~f:absolute in
@@ -233,6 +250,7 @@ let main command args =
   let source = ref None and root = ref None and results = ref None and output = ref None in
   let bundle = ref None and tools = ref None and stage = ref None and runs = ref None in
   let endpoint = ref None in
+  let simulation = ref false in
   let python = ref None and support = ref None and pdk = ref None in
   let opt name dest help = name, Stdlib.Arg.String (fun s ->
     if String.is_empty s || String.is_prefix s ~prefix:"--" then bad (name ^ " requires a nonempty path");
@@ -247,6 +265,11 @@ let main command args =
     opt "--pdk-root" pdk "PDK override"; "--native", Stdlib.Arg.Set native, " Native execution"] in
   let options = match command with
     | "describe" -> common
+    | "prepare" -> common @ roots
+    | "preview" -> common @ [opt "--source-root" source "Source checkout";
+                             opt "--project-root" root "Project root alias"]
+    | "resources" -> common @
+      [ "--simulation", Stdlib.Arg.Set simulation, " Explicit behavioral Simulation inventory" ]
     | "emit" -> common @ roots @ [opt "--output-dir" output "Exact new or empty bundle directory"]
     | "preflight" -> common @ roots @ routing @ [opt "--output" output "Exact report file"]
     | "run" -> common @ roots @ routing @
@@ -266,7 +289,34 @@ let main command args =
   let explicit = match !root, !source with
     | Some a, Some b when not (String.equal (U.realpath (absolute a)) (U.realpath (absolute b))) -> bad "Conflicting --project-root and --source-root"
     | Some a, _ | _, Some a -> Some (absolute a) | _ -> None in
-  let project = Fifo_asic.project () |> Or_error.ok_exn in
+   if String.equal command "prepare" then (
+     let source_root = Option.value_or_thunk explicit ~default:discover in
+     let store = Option.value_map !results
+       ~default:(Filename.concat source_root "_flow_results/preparation") ~f:absolute in
+     let module E = Hardcaml_asic_execution in
+     let request = E.Identity_json.parse (Yojson.Safe.to_string
+       (`Assoc [ "project", `String "fifo"; "source_root", `String source_root ]))
+       |> Result.map_error ~f:E.Identity_json.error_message |> Result.ok_or_failwith in
+     let outcome = E.Preparation_service.run_cli ~store ~request ~json:!json
+       ~prepare:(fun ~on_phase ->
+         let project = Fifo_asic.project () |> Or_error.ok_exn in
+         Project.prepare_resources ~on_phase project ~source_root) () in
+     Stdlib.exit (Option.value outcome.record.exit_code ~default:1));
+   let project = Fifo_asic.project () |> Or_error.ok_exn in
+   if String.equal command "preview" then (
+     let source_root = Option.value_or_thunk explicit ~default:discover in
+     match Project.prepare_resources project ~source_root with
+     | Ok prepared -> printf "%s%!" (Resource_preparation.to_string prepared); Stdlib.exit 0
+     | Error failure ->
+       printf "%s\n%!" (Yojson.Safe.pretty_to_string (Resource_preparation.Failure.to_json failure));
+       Stdlib.exit 1);
+   if String.equal command "resources" then (
+     let view = if !simulation then
+       Project.elaborate project ~mode:Simulation |> Or_error.ok_exn
+       |> Resource_snapshot.of_elaborated
+     else Project.elaborate_for_flow project |> Or_error.ok_exn |> Resource_snapshot.of_resolved in
+     printf "%s\n%!" (Yojson.Safe.pretty_to_string (Resource_snapshot.to_json view));
+     Stdlib.exit 0);
   if String.equal command "describe" then (
     let declaration = Sexp.to_string_hum (Project.describe project) in
     if !json then printf "%s\n%!" (Yojson.Safe.to_string (`Assoc
