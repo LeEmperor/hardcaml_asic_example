@@ -199,6 +199,47 @@ Focused EDA-less tests read this checkout's source/Git without mutating it:
 python3 -B scripts/test_flow_emit.py "$PROJECT" "$PWD"
 ```
 
+#### Workbench source-bundle preparation (EDA-less)
+
+`hardcaml-workbench-preparation.sexp` opts this checkout into Workbench's separate
+source-bundle preparation API. It builds the actual `bin/project.exe` with Dune
+`-j6` into `_build/default/bin/project.exe`, then runs `flow emit` with the selected
+flow, profile, endpoint and overrides. The 600-second budget applies to each job.
+Published bundles live in
+`.dev/workbench-real-demo/preparation-results/bundles/`, alongside the pinned demo
+store but separate from its physical `results/` evidence. The existing pinned ASIC
+and simulation companion configurations keep their independent roles.
+
+Start a preparation-capable Workbench daemon from the selected OCaml environment:
+
+```sh
+cd /home/wayne/devel/jane/hardcaml_asic_example
+. .dev/asic-prepare/current/activate.sh
+# Needed when inspecting the full workspace, which includes the simulation adapter:
+export OCAMLPATH="$OCAMLPATH:$PWD/.dev/workbench-provider-sdk/lib"
+export DUNEJOBS=6 OPAMJOBS=6 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+mkdir -p /absolute/private/discovery
+/home/wayne/devel/jane/hardcaml_workbench/scripts/with-switch.sh \
+  /absolute/path/to/preparation-capable-daemon --port 0 \
+  --discovery-dir /absolute/private/discovery --state-dir /absolute/private/state
+```
+
+Connect to that daemon with project environment `inherited` so the activated
+`OCAMLPATH` reaches its source-build child. The existing managed `asic-prepare`
+installation supplies both `hardcaml_asic` and `hardcaml_asic.execution`; no EDA
+toolchain is needed. A daemon already running before activation does not acquire
+the new shell environment. Opening this project alone does not submit preparation.
+
+In the Preparation view, select e.g. `standard / synth_delay`, endpoint `synthesis`,
+and override `SYNTH_ABC_BUFFERING=true`, then request preparation (`r`). Inspect
+the completed build/emission jobs, their logs and registered bundle artifacts;
+repeat with unchanged source to verify bundle reuse. Elaboration Enter is read-only;
+preparation cancellation uses `x`. Preparation history and artifact handles are
+daemon-session scoped, while published bundles persist on disk. The backend API is
+`POST /api/v1/preparation` with S-expression `Get`, `Prepare` (submission key,
+selection, optional expected plan identity), or `Cancel` operations. Physical
+execution remains a separate explicit action.
+
 Run calls `Methodology_plan.prepare` once, compares the required preview identity,
 then negotiates exact integer CLI4 plus boolean `capabilities.namedflow1=true`
 before publishing the **same prepared bundle**. Source, catalog, profile, request,
