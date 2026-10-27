@@ -1,0 +1,3 @@
+archive: absent, not included: project/runs/asic/final/sdc
+archive: absent, not included: project/runs/asic/06-yosys-synthesis
+archive: absent, not included: project/runs/asic/55-openroad-stapostpnr
