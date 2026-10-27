@@ -201,6 +201,15 @@ python3 -B scripts/test_flow_emit.py "$PROJECT" "$PWD"
 
 #### Workbench source-bundle preparation (EDA-less)
 
+**Unified fresh workflow (2026-10-27):** the current Workbench client/daemon runs
+Elaboration before every fresh physical prefix. Checklist `r` stages inputs only;
+`R` stages and launches. Elaboration-only stops after build/emission; Synthesis
+and later endpoints consume that exact emitted bundle. See
+[controls and restart instructions](../hardcaml_workbench/docs/unified_fresh_prefix_plan.md#delivery-and-user-verification).
+The local ASIC companion's physical provider was explicitly upgraded to PT.5
+generation `dd1ec9002cdc40f2936488cedd9eb0fe` because the old provider rejects the
+new resource-snapshot manifest field. Existing generation pointers are unchanged.
+
 `hardcaml-workbench-preparation.sexp` opts this checkout into Workbench's separate
 source-bundle preparation API. It builds the actual `bin/project.exe` with Dune
 `-j6` into `_build/default/bin/project.exe`, then runs `flow emit` with the selected
@@ -214,7 +223,7 @@ Start a preparation-capable Workbench daemon from the selected OCaml environment
 
 ```sh
 cd /home/wayne/devel/jane/hardcaml_asic_example
-. .dev/asic-prepare/current/activate.sh
+. .dev/asic-pt5/current/activate.sh
 # Needed when inspecting the full workspace, which includes the simulation adapter:
 export OCAMLPATH="$OCAMLPATH:$PWD/.dev/workbench-provider-sdk/lib"
 export DUNEJOBS=6 OPAMJOBS=6 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
@@ -225,20 +234,23 @@ mkdir -p /absolute/private/discovery
 ```
 
 Connect to that daemon with project environment `inherited` so the activated
-`OCAMLPATH` reaches its source-build child. The existing managed `asic-prepare`
+`OCAMLPATH` reaches its source-build child. The managed `asic-pt5`
 installation supplies both `hardcaml_asic` and `hardcaml_asic.execution`; no EDA
 toolchain is needed. A daemon already running before activation does not acquire
 the new shell environment. Opening this project alone does not submit preparation.
 
-In the Preparation view, select e.g. `standard / synth_delay`, endpoint `synthesis`,
-and override `SYNTH_ABC_BUFFERING=true`, then request preparation (`r`). Inspect
+Use the palette's preparation-input selection for e.g. `standard / synth_delay`,
+endpoint `synthesis`, and override `SYNTH_ABC_BUFFERING=true`. In the Overview
+checklist, select Elaboration and use `r` to stage, or `R` to stage and launch. Inspect
 the completed build/emission jobs, their logs and registered bundle artifacts;
 repeat with unchanged source to verify bundle reuse. Elaboration Enter is read-only;
-preparation cancellation uses `x`. Preparation history and artifact handles are
-daemon-session scoped, while published bundles persist on disk. The backend API is
+preparation cancellation uses `x`. The original standalone API's history and artifact handles are
+daemon-session scoped, while published bundles persist on disk. Its backend API is
 `POST /api/v1/preparation` with S-expression `Get`, `Prepare` (submission key,
 selection, optional expected plan identity), or `Cancel` operations. Physical
-execution remains a separate explicit action.
+execution remains an explicit action. The unified workflow uses ASIC RPC
+`Stage_fresh`/`Launch_fresh`/`Cancel_workflow`, retaining durable workflow lineage;
+fresh physical launch automatically includes source Elaboration.
 
 Run calls `Methodology_plan.prepare` once, compares the required preview identity,
 then negotiates exact integer CLI4 plus boolean `capabilities.namedflow1=true`
