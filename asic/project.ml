@@ -71,9 +71,10 @@ let create () =
     ~clocks:[ { Clock.port = "clk"; period = Time_float.Span.of_sec (1. /. 48e6) } ]
     (* Specimen analysis budgets, not measured board timing or physical acceptance. *)
     ~timing:
-      { input_delays = delays [ "ui_in"; "uio_in"; "ena"; "rst_n" ] 1.
-      ; output_delays = delays [ "uo_out"; "uio_out"; "uio_oe" ] 2.
-      }
+      (Timing.create
+         ~input_delays:(delays [ "ui_in"; "uio_in"; "ena"; "rst_n" ] 1.)
+         ~output_delays:(delays [ "uo_out"; "uio_out"; "uio_oe" ] 2.)
+         ())
     ~pinout
     ~policy
     ()

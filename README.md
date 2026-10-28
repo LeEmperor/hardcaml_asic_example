@@ -201,6 +201,14 @@ python3 -B scripts/test_flow_emit.py "$PROJECT" "$PWD"
 
 #### Workbench source-bundle preparation (EDA-less)
 
+**Resources inspector (2026-10-28):** the rebuilt app now has a Resources workspace.
+Use **Space c c → Resources: Import retained resource evidence** with
+`acceptance/resource-measurements/accepted-live-01/run` as an **absolute** path.
+This reads the actual retained SRAM measurements without launching EDA. The owner
+approved the local ASIC companion's provider upgrade to final PT.6 generation
+`97b85a9e25e24615b758b97b21ca9697`; other settings and generation pointers remain
+unchanged. See [current restart/import controls](../hardcaml_workbench/docs/resource_inspector.md).
+
 **Unified fresh workflow (2026-10-27):** the current Workbench client/daemon runs
 Elaboration before every fresh physical prefix. Checklist `r` stages inputs only;
 `R` stages and launches. Elaboration-only stops after build/emission; Synthesis
@@ -223,7 +231,7 @@ Start a preparation-capable Workbench daemon from the selected OCaml environment
 
 ```sh
 cd /home/wayne/devel/jane/hardcaml_asic_example
-. .dev/asic-pt5/current/activate.sh
+. .dev/asic-pt6/generations/97b85a9e25e24615b758b97b21ca9697/activate.sh
 # Needed when inspecting the full workspace, which includes the simulation adapter:
 export OCAMLPATH="$OCAMLPATH:$PWD/.dev/workbench-provider-sdk/lib"
 export DUNEJOBS=6 OPAMJOBS=6 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
@@ -234,7 +242,7 @@ mkdir -p /absolute/private/discovery
 ```
 
 Connect to that daemon with project environment `inherited` so the activated
-`OCAMLPATH` reaches its source-build child. The managed `asic-pt5`
+`OCAMLPATH` reaches its source-build child. The exact final `asic-pt6` generation
 installation supplies both `hardcaml_asic` and `hardcaml_asic.execution`; no EDA
 toolchain is needed. A daemon already running before activation does not acquire
 the new shell environment. Opening this project alone does not submit preparation.

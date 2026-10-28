@@ -130,9 +130,10 @@ let project ?(with_macro_intent = true) ?(depth = 256) ?operation requirement =
     ~flow:(Flow.librelane ~overrides ~macros operation)
     ~clocks:[ { Clock.port = "clk"; period = Time_float.Span.of_sec (1. /. 48e6) } ]
     ~timing:
-      { input_delays = delays [ "ui_in"; "uio_in"; "ena"; "rst_n" ] 1.
-      ; output_delays = delays [ "uo_out"; "uio_out"; "uio_oe" ] 2.
-      }
+      (Timing.create
+         ~input_delays:(delays [ "ui_in"; "uio_in"; "ena"; "rst_n" ] 1.)
+         ~output_delays:(delays [ "uo_out"; "uio_out"; "uio_oe" ] 2.)
+         ())
     ~pinout:
       (List.concat_map [ Pinout.Bank.Ui; Uo; Uio ] ~f:(fun bank ->
          List.init 8 ~f:(fun bit ->
